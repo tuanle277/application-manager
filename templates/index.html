@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Job Email Analyzer</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link
+      rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css"
+    />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      body {
+        font-family: "Poppins", sans-serif;
+        background: linear-gradient(135deg, #f5f7fa 0%, #e4e8f0 100%);
+        min-height: 100vh;
+      }
+      .alert {
+        padding: 1rem;
+        margin-bottom: 1rem;
+        border-radius: 0.5rem;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
+        position: relative;
+        transition: all 0.3s ease;
+      }
+      .alert-success {
+        background-color: #d1fae5;
+        border-left: 4px solid #10b981;
+        color: #065f46;
+      }
+      .alert-danger {
+        background-color: #fee2e2;
+        border-left: 4px solid #ef4444;
+        color: #991b1b;
+      }
+      .alert-warning {
+        background-color: #fef3c7;
+        border-left: 4px solid #f59e0b;
+        color: #92400e;
+      }
+      .alert-info {
+        background-color: #dbeafe;
+        border-left: 4px solid #3b82f6;
+        color: #1e40af;
+      }
+
+      .card {
+        transition: transform 0.3s ease, box-shadow 0.3s ease;
+      }
+      .card:hover {
+        transform: translateY(-5px);
+        box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1);
+      }
+
+      .btn {
+        transition: all 0.3s ease;
+        position: relative;
+        overflow: hidden;
+      }
+      .btn:after {
+        content: "";
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        width: 5px;
+        height: 5px;
+        background: rgba(255, 255, 255, 0.5);
+        opacity: 0;
+        border-radius: 100%;
+        transform: scale(1, 1) translate(-50%);
+        transform-origin: 50% 50%;
+      }
+      .btn:hover:after {
+        animation: ripple 1s ease-out;
+      }
+
+      @keyframes ripple {
+        0% {
+          transform: scale(0, 0);
+          opacity: 0.5;
+        }
+        100% {
+          transform: scale(20, 20);
+          opacity: 0;
+        }
+      }
+
+      .form-input {
+        transition: border-color 0.3s ease, box-shadow 0.3s ease;
+      }
+      .form-input:focus {
+        border-color: #3b82f6;
+        box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.2);
+      }
+
+      /* Loading animation */
+      .loading-overlay {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background-color: rgba(255, 255, 255, 0.8);
+        display: none;
+        justify-content: center;
+        align-items: center;
+        z-index: 1000;
+        flex-direction: column;
+      }
+
+      .spinner {
+        border: 5px solid #f3f3f3;
+        border-top: 5px solid #3b82f6;
+        border-radius: 50%;
+        width: 50px;
+        height: 50px;
+        animation: spin 1s linear infinite;
+      }
+
+      .processing-steps {
+        margin-top: 20px;
+        text-align: center;
+      }
+
+      .processing-step {
+        margin: 8px 0;
+        opacity: 0.6;
+        transition: opacity 0.3s ease;
+      }
+
+      .processing-step.active {
+        opacity: 1;
+        font-weight: 600;
+        color: #3b82f6;
+      }
+
+      @keyframes spin {
+        0% {
+          transform: rotate(0deg);
+        }
+        100% {
+          transform: rotate(360deg);
+        }
+      }
+    </style>
+  </head>
+  <body class="text-gray-800">
+    <!-- Loading Overlay -->
+    <div id="loadingOverlay" class="loading-overlay">
+      <div class="spinner"></div>
+      <h3 class="mt-4 text-xl font-semibold text-gray-800">
+        Processing Emails...
+      </h3>
+      <div class="processing-steps">
+        <div class="processing-step" id="step1">1. Connecting to Gmail...</div>
+        <div class="processing-step" id="step2">
+          2. Searching for job-related emails...
+        </div>
+        <div class="processing-step" id="step3">
+          3. Analyzing email content with Gemini AI...
+        </div>
+        <div class="processing-step" id="step4">
+          4. Writing results to Google Sheets...
+        </div>
+        <div class="processing-step" id="step5">
+          5. Preparing results page...
+        </div>
+      </div>
+      <p class="mt-4 text-sm text-gray-600">
+        This may take a few minutes depending on the number of emails.
+      </p>
+    </div>
+
+    <div class="container mx-auto p-4 md:p-8 max-w-4xl">
+      <header class="text-center mb-10">
+        <h1
+          class="text-4xl md:text-5xl font-bold mb-3 bg-clip-text text-transparent bg-gradient-to-r from-blue-600 to-indigo-600"
+        >
+          Job Application Email Analyzer
+        </h1>
+        <p class="text-gray-600 text-lg">
+          Scan your Gmail, analyze with AI, and log job statuses to Google
+          Sheets.
+        </p>
+      </header>
+
+      {% with messages = get_flashed_messages(with_categories=true) %} {% if
+      messages %}
+      <div class="space-y-3 mb-6">
+        {% for category, message in messages %}
+        <div
+          class="alert alert-{{ category }} alert-dismissible fade show"
+          role="alert"
+        >
+          <div class="flex items-center">
+            {% if category == 'success' %}
+            <i class="fas fa-check-circle mr-2"></i>
+            {% elif category == 'danger' %}
+            <i class="fas fa-exclamation-circle mr-2"></i>
+            {% elif category == 'warning' %}
+            <i class="fas fa-exclamation-triangle mr-2"></i>
+            {% else %}
+            <i class="fas fa-info-circle mr-2"></i>
+            {% endif %} {{ message }}
+          </div>
+          <button
+            type="button"
+            class="absolute top-0 bottom-0 right-0 px-4 py-3 text-gray-600 hover:text-gray-900"
+            data-dismiss="alert"
+            aria-label="Close"
+            onclick="this.parentElement.style.display='none';"
+          >
+            <span aria-hidden="true">&times;</span>
+          </button>
+        </div>
+        {% endfor %}
+      </div>
+      {% endif %} {% endwith %}
+
+      <div class="card bg-white p-8 rounded-xl shadow-lg mb-8 text-center">
+        {% if user_info %}
+        <div class="flex items-center justify-center mb-4">
+          <div
+            class="w-12 h-12 bg-blue-100 rounded-full flex items-center justify-center mr-3"
+          >
+            <i class="fas fa-user text-blue-600 text-xl"></i>
+          </div>
+          <div class="text-left">
+            <p class="text-sm text-gray-500">Logged in as:</p>
+            <p class="font-semibold text-blue-600">
+              {{ user_info.get('email', 'Unknown User') }}
+            </p>
+          </div>
+        </div>
+        <a
+          href="{{ url_for('logout') }}"
+          class="btn inline-flex items-center bg-gradient-to-r from-red-500 to-red-600 text-white font-medium py-3 px-6 rounded-lg hover:from-red-600 hover:to-red-700 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-opacity-50"
+        >
+          <i class="fas fa-sign-out-alt mr-2"></i> Log Out
+        </a>
+        {% else %}
+        <div class="mb-6">
+          <div
+            class="w-20 h-20 mx-auto bg-blue-100 rounded-full flex items-center justify-center mb-4"
+          >
+            <i class="fas fa-lock text-blue-600 text-3xl"></i>
+          </div>
+          <p class="text-lg mb-4">
+            Please log in with your Google Account to get started.
+          </p>
+        </div>
+        <a
+          href="{{ url_for('login') }}"
+          class="btn inline-flex items-center bg-gradient-to-r from-blue-500 to-blue-600 text-white font-medium py-3 px-6 rounded-lg hover:from-blue-600 hover:to-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-50"
+        >
+          <i class="fab fa-google mr-2"></i> Sign in with Google
+        </a>
+        {% endif %}
+      </div>
+
+      {% if user_info %}
+      <div class="card bg-white p-8 rounded-xl shadow-lg">
+        <h2
+          class="text-2xl font-bold mb-6 text-center text-gray-800 flex items-center justify-center"
+        >
+          <i class="fas fa-magic text-indigo-500 mr-2"></i> Start Analysis
+        </h2>
+        <form
+          action="{{ url_for('process_emails') }}"
+          method="POST"
+          class="space-y-6"
+          id="emailProcessForm"
+        >
+          <div class="relative">
+            <label
+              for="sheet_name"
+              class="block text-sm font-medium text-gray-700 mb-2"
+              >Google Sheet Name</label
+            >
+            <div class="relative">
+              <div
+                class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none"
+              >
+                <i class="fas fa-file-spreadsheet text-gray-400"></i>
+              </div>
+              <input
+                type="text"
+                id="sheet_name"
+                name="sheet_name"
+                class="form-input w-full pl-10 pr-3 py-3 border border-gray-300 rounded-lg shadow-sm focus:outline-none"
+                value="Job Application Tracker"
+              />
+            </div>
+            <p class="text-sm text-gray-500 mt-2">
+              The sheet will be created in your Google Drive if it doesn't
+              exist.
+            </p>
+            <p class="text-sm text-green-600 mt-1 flex items-center">
+              <i class="fas fa-check-circle mr-1"></i>
+              The sheet will appear in your Google Drive for easy access.
+            </p>
+          </div>
+
+          <div class="relative">
+            <label
+              for="max_emails"
+              class="block text-sm font-medium text-gray-700 mb-2"
+              >Max Emails to Process</label
+            >
+            <div class="relative">
+              <div
+                class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none"
+              >
+                <i class="fas fa-envelope text-gray-400"></i>
+              </div>
+              <input
+                type="number"
+                id="max_emails"
+                name="max_emails"
+                class="form-input w-full pl-10 pr-3 py-3 border border-gray-300 rounded-lg shadow-sm focus:outline-none"
+                value="50"
+                min="10"
+              />
+            </div>
+            <p class="text-sm text-gray-500 mt-2 flex items-center">
+              <i class="fas fa-info-circle mr-1 text-blue-500"></i>
+              Limits the number of recent matching emails analyzed. Leave blank
+              or 0 for no limit (can be slow).
+            </p>
+          </div>
+
+          <div class="text-center pt-4">
+            <button
+              type="submit"
+              class="btn w-full md:w-auto bg-gradient-to-r from-green-500 to-emerald-600 text-white font-bold py-3 px-8 rounded-lg hover:from-green-600 hover:to-emerald-700 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-opacity-50 disabled:opacity-50 disabled:cursor-not-allowed"
+              {%
+              if
+              not
+              user_info
+              %}disabled{%
+              endif
+              %}
+            >
+              <i class="fas fa-cogs mr-2"></i> Start Processing Emails
+            </button>
+          </div>
+          {% if not user_info %}
+          <p
+            class="text-center text-sm text-red-600 mt-2 flex items-center justify-center"
+          >
+            <i class="fas fa-exclamation-circle mr-1"></i>
+            Please log in to enable processing.
+          </p>
+          {% endif %}
+        </form>
+      </div>
+      {% endif %}
+
+      <footer class="text-center mt-10 py-4">
+        <div class="flex items-center justify-center mb-3">
+          <div
+            class="h-px bg-gradient-to-r from-transparent via-gray-400 to-transparent w-16 mr-3"
+          ></div>
+          <i class="fas fa-robot text-indigo-500"></i>
+          <div
+            class="h-px bg-gradient-to-r from-transparent via-gray-400 to-transparent w-16 ml-3"
+          ></div>
+        </div>
+        <p class="text-gray-500">
+          Using
+          <span class="font-semibold text-indigo-600">Gemini API</span> for
+          AI-powered analysis.
+        </p>
+      </footer>
+    </div>
+
+    <script>
+      // Add some interactivity
+      document.addEventListener("DOMContentLoaded", function () {
+        // Fade in elements on page load
+        document.querySelectorAll(".card, header, footer").forEach((el) => {
+          el.style.opacity = "0";
+          el.style.transition = "opacity 0.5s ease";
+          setTimeout(() => {
+            el.style.opacity = "1";
+          }, 100);
+        });
+
+        // Add focus effects to inputs
+        document.querySelectorAll(".form-input").forEach((input) => {
+          input.addEventListener("focus", function () {
+            this.parentElement.classList.add(
+              "ring-2",
+              "ring-blue-200",
+              "ring-opacity-50"
+            );
+          });
+          input.addEventListener("blur", function () {
+            this.parentElement.classList.remove(
+              "ring-2",
+              "ring-blue-200",
+              "ring-opacity-50"
+            );
+          });
+        });
+
+        // Show loading overlay when form is submitted
+        const form = document.getElementById("emailProcessForm");
+        if (form) {
+          form.addEventListener("submit", function () {
+            // No need to show loading overlay here anymore
+            // We'll redirect to results page and show progress there
+          });
+        }
+      });
+    </script>
+  </body>
+</html>

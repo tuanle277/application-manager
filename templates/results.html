@@ -1,0 +1,1007 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Processing Results</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link
+      rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css"
+    />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      body {
+        font-family: "Poppins", sans-serif;
+        background: linear-gradient(135deg, #f5f7fa 0%, #e4e8f0 100%);
+        min-height: 100vh;
+      }
+      .card {
+        transition: all 0.3s ease;
+        border-radius: 1rem;
+        box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1),
+          0 4px 6px -2px rgba(0, 0, 0, 0.05);
+        background: rgba(255, 255, 255, 0.9);
+        backdrop-filter: blur(10px);
+        border: 1px solid rgba(255, 255, 255, 0.2);
+      }
+      .card:hover {
+        transform: translateY(-5px);
+        box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1),
+          0 10px 10px -5px rgba(0, 0, 0, 0.04);
+      }
+      .alert {
+        padding: 1rem;
+        margin-bottom: 1rem;
+        border-radius: 0.75rem;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
+      }
+      .alert-danger {
+        background-color: #fee2e2;
+        border-left: 4px solid #ef4444;
+        color: #991b1b;
+      }
+      .btn {
+        transition: all 0.3s ease;
+        position: relative;
+        overflow: hidden;
+        border-radius: 0.75rem;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+      }
+      .btn:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 10px 15px rgba(0, 0, 0, 0.1);
+      }
+      .btn:after {
+        content: "";
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        width: 5px;
+        height: 5px;
+        background: rgba(255, 255, 255, 0.5);
+        opacity: 0;
+        border-radius: 100%;
+        transform: scale(1, 1) translate(-50%);
+        transform-origin: 50% 50%;
+      }
+      .btn:hover:after {
+        animation: ripple 1s ease-out;
+      }
+      @keyframes ripple {
+        0% {
+          transform: scale(0, 0);
+          opacity: 0.5;
+        }
+        100% {
+          transform: scale(20, 20);
+          opacity: 0;
+        }
+      }
+      .table-container {
+        overflow-x: auto;
+        border-radius: 0.75rem;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
+      }
+      table {
+        border-collapse: separate;
+        border-spacing: 0;
+        width: 100%;
+      }
+      th {
+        position: sticky;
+        top: 0;
+        background: #f3f4f6;
+        z-index: 10;
+      }
+      th,
+      td {
+        padding: 1rem;
+        text-align: left;
+      }
+      tbody tr {
+        transition: all 0.2s ease;
+      }
+      tbody tr:hover {
+        background-color: rgba(59, 130, 246, 0.05);
+      }
+      .status-badge {
+        padding: 0.35rem 0.75rem;
+        border-radius: 9999px;
+        font-size: 0.75rem;
+        font-weight: 600;
+        display: inline-block;
+      }
+      .status-interview {
+        background-color: #dbeafe;
+        color: #1e40af;
+      }
+      .status-assessment {
+        background-color: #e0e7ff;
+        color: #3730a3;
+      }
+      .status-offer {
+        background-color: #d1fae5;
+        color: #065f46;
+      }
+      .status-rejection {
+        background-color: #fee2e2;
+        color: #991b1b;
+      }
+      .counter {
+        display: inline-block;
+        animation: countUp 2s ease-out forwards;
+      }
+      @keyframes countUp {
+        from {
+          opacity: 0;
+          transform: translateY(20px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+      .progress-bar {
+        height: 8px;
+        border-radius: 4px;
+        background: #e5e7eb;
+        margin: 1rem 0;
+        overflow: hidden;
+      }
+      .progress-value {
+        height: 100%;
+        background: linear-gradient(90deg, #3b82f6, #2563eb);
+        border-radius: 4px;
+        transition: width 1.5s ease-in-out;
+      }
+      .spinner {
+        border: 4px solid rgba(0, 0, 0, 0.1);
+        width: 36px;
+        height: 36px;
+        border-radius: 50%;
+        border-left-color: #09f;
+        animation: spin 1s ease infinite;
+      }
+      @keyframes spin {
+        0% {
+          transform: rotate(0deg);
+        }
+        100% {
+          transform: rotate(360deg);
+        }
+      }
+
+      /* Processing animation styles */
+      .processing-step {
+        margin: 8px 0;
+        opacity: 0.6;
+        transition: opacity 0.3s ease, transform 0.3s ease;
+        display: flex;
+        align-items: center;
+        padding: 10px;
+        border-radius: 8px;
+      }
+
+      .processing-step.active {
+        opacity: 1;
+        font-weight: 600;
+        color: #3b82f6;
+        background-color: rgba(59, 130, 246, 0.1);
+        transform: translateX(10px);
+      }
+
+      .processing-step .step-icon {
+        width: 24px;
+        height: 24px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        margin-right: 12px;
+        border-radius: 50%;
+      }
+
+      .processing-step.active .step-icon {
+        background-color: #3b82f6;
+        color: white;
+      }
+
+      .processing-step .step-text {
+        flex-grow: 1;
+      }
+
+      .processing-step .step-status {
+        font-size: 0.8rem;
+        margin-left: 8px;
+      }
+
+      .processing-step.active .step-status {
+        color: #3b82f6;
+      }
+
+      .pulse {
+        animation: pulse 2s infinite;
+      }
+
+      @keyframes pulse {
+        0% {
+          box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.4);
+        }
+        70% {
+          box-shadow: 0 0 0 10px rgba(59, 130, 246, 0);
+        }
+        100% {
+          box-shadow: 0 0 0 0 rgba(59, 130, 246, 0);
+        }
+      }
+
+      .fade-in {
+        animation: fadeIn 0.5s ease-in;
+      }
+
+      @keyframes fadeIn {
+        from {
+          opacity: 0;
+        }
+        to {
+          opacity: 1;
+        }
+      }
+
+      .current-item {
+        background: rgba(59, 130, 246, 0.05);
+        border-left: 3px solid #3b82f6;
+        padding: 12px;
+        border-radius: 8px;
+        margin-top: 16px;
+        transition: all 0.3s ease;
+      }
+
+      .live-results-container {
+        max-height: 400px;
+        overflow-y: auto;
+        padding-right: 10px;
+      }
+
+      .live-result-item {
+        padding: 10px;
+        margin-bottom: 8px;
+        border-radius: 8px;
+        background: white;
+        border-left: 3px solid transparent;
+        transition: all 0.3s ease;
+        animation: slideIn 0.3s ease-out;
+      }
+
+      @keyframes slideIn {
+        from {
+          opacity: 0;
+          transform: translateY(20px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+
+      .live-result-item:hover {
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
+      }
+
+      .live-result-item.interview {
+        border-left-color: #3b82f6;
+      }
+
+      .live-result-item.assessment {
+        border-left-color: #6366f1;
+      }
+
+      .live-result-item.offer {
+        border-left-color: #10b981;
+      }
+
+      .live-result-item.rejection {
+        border-left-color: #ef4444;
+      }
+    </style>
+  </head>
+  <body class="text-gray-800">
+    <div class="container mx-auto p-4 md:p-8 max-w-6xl">
+      <header class="text-center mb-10">
+        <h1
+          class="text-4xl md:text-5xl font-bold mb-3 bg-clip-text text-transparent bg-gradient-to-r from-blue-600 to-indigo-600"
+        >
+          Processing Results
+        </h1>
+        <p class="text-gray-600 text-lg" id="headerStatus">
+          Processing your emails...
+        </p>
+      </header>
+
+      <!-- Processing Status Card - Shown during processing -->
+      <div class="card p-6 mb-8" id="processingCard">
+        <h2 class="text-2xl font-semibold mb-4 text-gray-700 flex items-center">
+          <i class="fas fa-cogs mr-2 text-blue-500"></i> Processing Status
+        </h2>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <div>
+            <!-- Processing Steps -->
+            <div class="processing-steps mb-4">
+              <div class="processing-step" id="step1">
+                <div class="step-icon"><i class="fas fa-plug"></i></div>
+                <div class="step-text">Connecting to Gmail</div>
+                <div class="step-status" id="step1Status">Waiting...</div>
+              </div>
+              <div class="processing-step" id="step2">
+                <div class="step-icon"><i class="fas fa-search"></i></div>
+                <div class="step-text">Searching for job-related emails</div>
+                <div class="step-status" id="step2Status">Waiting...</div>
+              </div>
+              <div class="processing-step" id="step3">
+                <div class="step-icon"><i class="fas fa-brain"></i></div>
+                <div class="step-text">
+                  Analyzing email content with Gemini AI
+                </div>
+                <div class="step-status" id="step3Status">Waiting...</div>
+              </div>
+              <div class="processing-step" id="step4">
+                <div class="step-icon"><i class="fas fa-table"></i></div>
+                <div class="step-text">Writing results to Google Sheets</div>
+                <div class="step-status" id="step4Status">Waiting...</div>
+              </div>
+              <div class="processing-step" id="step5">
+                <div class="step-icon"><i class="fas fa-check-circle"></i></div>
+                <div class="step-text">Finalizing results</div>
+                <div class="step-status" id="step5Status">Waiting...</div>
+              </div>
+            </div>
+
+            <!-- Overall Progress -->
+            <div class="mt-6">
+              <div class="flex justify-between mb-2">
+                <span class="text-sm font-medium text-gray-700"
+                  >Overall Progress</span
+                >
+                <span
+                  class="text-sm font-medium text-blue-600"
+                  id="progressText"
+                  >0%</span
+                >
+              </div>
+              <div class="progress-bar">
+                <div
+                  class="progress-value"
+                  id="progressBar"
+                  style="width: 0%"
+                ></div>
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <!-- Current Item Being Processed -->
+            <div class="current-item" id="currentItem">
+              <h3 class="text-lg font-medium text-gray-800 mb-2">
+                Currently Processing
+              </h3>
+              <div class="flex items-center mb-3">
+                <div class="spinner mr-3"></div>
+                <div class="text-sm text-gray-600" id="currentItemText">
+                  Initializing...
+                </div>
+              </div>
+              <div class="text-xs text-gray-500" id="currentItemDetails"></div>
+            </div>
+
+            <!-- Live Results -->
+            <div class="mt-4">
+              <h3 class="text-lg font-medium text-gray-800 mb-2">
+                Live Results
+              </h3>
+              <div class="live-results-container" id="liveResults">
+                <div id="noResultsMessage" class="text-gray-500 text-sm italic">
+                  No results yet. Job applications will appear here as they are
+                  processed.
+                </div>
+                <div id="liveResultsList" class="space-y-2">
+                  <!-- Results will be populated here by JavaScript -->
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Results Summary Card - Initially hidden, shown when complete -->
+      <div class="card p-6 mb-8" id="summaryCard" style="display: none">
+        <h2 class="text-2xl font-semibold mb-4 text-gray-700 flex items-center">
+          <i class="fas fa-chart-pie mr-2 text-blue-500"></i> Summary
+        </h2>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <div>
+            <div class="flex items-center mb-2">
+              <div
+                class="text-4xl font-bold text-blue-600 mr-3 counter"
+                id="processedCount"
+              >
+                {{ processed_count|default(0) }}
+              </div>
+              <div class="text-gray-600">
+                <div class="font-medium">Emails Analyzed</div>
+                <div class="text-sm">Total emails processed</div>
+              </div>
+            </div>
+            <div class="progress-bar">
+              <div class="progress-value" style="width: 100%"></div>
+            </div>
+          </div>
+          <div>
+            <div class="flex items-center mb-2">
+              <div
+                class="text-4xl font-bold text-green-600 mr-3 counter"
+                id="includedCount"
+              >
+                {{ included_count|default(0) }}
+              </div>
+              <div class="text-gray-600">
+                <div class="font-medium">Records Added</div>
+                <div class="text-sm">Relevant job applications</div>
+              </div>
+            </div>
+            <div class="progress-bar">
+              <div
+                class="progress-value"
+                id="includedProgress"
+                style="width: {{ '{:.1f}%'.format((included_count / processed_count * 100) if processed_count > 0 else 0) }}"
+              ></div>
+            </div>
+          </div>
+        </div>
+
+        {% if sheet_url != '#' %}
+        <div class="mt-6 flex justify-center">
+          <a
+            href="{{ sheet_url }}"
+            target="_blank"
+            class="btn flex items-center justify-center bg-gradient-to-r from-blue-500 to-indigo-600 hover:from-blue-600 hover:to-indigo-700 text-white font-medium py-3 px-6"
+            id="sheetLink"
+          >
+            <i class="fas fa-table mr-2"></i> View Google Sheet:
+            <span id="sheetName"
+              >{{ sheet_name|default('Job Application Tracker') }}</span
+            >
+            <i class="fas fa-external-link-alt text-xs ml-2"></i>
+          </a>
+        </div>
+        {% endif %}
+      </div>
+
+      {% if errors %}
+      <div class="card p-6 mb-8" id="errorsCard">
+        <h2 class="text-2xl font-semibold mb-4 text-red-600 flex items-center">
+          <i class="fas fa-exclamation-triangle mr-2"></i> Errors Encountered
+        </h2>
+        <div class="bg-red-50 rounded-lg p-4 border border-red-100">
+          <ul class="list-disc list-inside space-y-2" id="errorsList">
+            {% for error in errors %}
+            <li class="text-red-600">{{ error }}</li>
+            {% endfor %}
+          </ul>
+        </div>
+      </div>
+      {% else %}
+      <div class="card p-6 mb-8" id="errorsCard" style="display: none">
+        <h2 class="text-2xl font-semibold mb-4 text-red-600 flex items-center">
+          <i class="fas fa-exclamation-triangle mr-2"></i> Errors Encountered
+        </h2>
+        <div class="bg-red-50 rounded-lg p-4 border border-red-100">
+          <ul class="list-disc list-inside space-y-2" id="errorsList"></ul>
+        </div>
+      </div>
+      {% endif %}
+
+      <!-- Results Table - Initially hidden, shown when complete -->
+      <div class="card p-6 mb-8" id="resultsCard" style="display: none">
+        <h2 class="text-2xl font-semibold mb-4 text-gray-700 flex items-center">
+          <i class="fas fa-clipboard-list mr-2 text-blue-500"></i> Added Records
+        </h2>
+
+        <div class="mb-4">
+          <input
+            type="text"
+            id="recordSearch"
+            placeholder="Search records..."
+            class="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all"
+          />
+        </div>
+
+        <div class="table-container">
+          <table class="min-w-full" id="resultsTable">
+            <thead>
+              <tr class="border-b border-gray-200">
+                <th
+                  class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer"
+                  onclick="sortTable(0)"
+                >
+                  Date <i class="fas fa-sort ml-1"></i>
+                </th>
+                <th
+                  class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer"
+                  onclick="sortTable(1)"
+                >
+                  Company <i class="fas fa-sort ml-1"></i>
+                </th>
+                <th
+                  class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer"
+                  onclick="sortTable(2)"
+                >
+                  Job Title <i class="fas fa-sort ml-1"></i>
+                </th>
+                <th
+                  class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer"
+                  onclick="sortTable(3)"
+                >
+                  Status <i class="fas fa-sort ml-1"></i>
+                </th>
+                <th
+                  class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
+                >
+                  Subject
+                </th>
+              </tr>
+            </thead>
+            <tbody id="resultsTableBody">
+              {% for record in results %}
+              <tr class="border-b border-gray-100">
+                <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-600">
+                  {{ record['Date Received'] }}
+                </td>
+                <td
+                  class="px-4 py-3 whitespace-nowrap text-sm font-medium text-gray-900"
+                >
+                  {{ record['Company Name'] }}
+                </td>
+                <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-700">
+                  {{ record['Job Title'] }}
+                </td>
+                <td class="px-4 py-3 whitespace-nowrap">
+                  {% set status = record['Status'] %} {% if status == 'Interview
+                  Request' %}
+                  <span class="status-badge status-interview">
+                    <i class="fas fa-user-tie mr-1"></i> Interview
+                  </span>
+                  {% elif status == 'Assessment Request' %}
+                  <span class="status-badge status-assessment">
+                    <i class="fas fa-tasks mr-1"></i> Assessment
+                  </span>
+                  {% elif status == 'Offer' %}
+                  <span class="status-badge status-offer">
+                    <i class="fas fa-check-circle mr-1"></i> Offer
+                  </span>
+                  {% elif status == 'Rejection' %}
+                  <span class="status-badge status-rejection">
+                    <i class="fas fa-times-circle mr-1"></i> Rejection
+                  </span>
+                  {% else %}
+                  <span class="status-badge bg-gray-100 text-gray-700">
+                    {{ status }}
+                  </span>
+                  {% endif %}
+                </td>
+                <td
+                  class="px-4 py-3 text-sm text-gray-500 truncate max-w-xs"
+                  title="{{ record['Email Subject'] }}"
+                >
+                  {{ record['Email Subject'][:50] }}{% if record['Email
+                  Subject']|length > 50 %}...{% endif %}
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="text-center mt-8 mb-10">
+        <a
+          href="{{ url_for('index') }}"
+          class="btn inline-flex items-center bg-gradient-to-r from-gray-500 to-gray-600 hover:from-gray-600 hover:to-gray-700 text-white font-bold py-3 px-6"
+        >
+          <i class="fas fa-arrow-left mr-2"></i> Back to Home
+        </a>
+      </div>
+    </div>
+
+    <script>
+      console.log("DEBUG: results.html loaded");
+
+      let jobId; // Define jobId in global scope
+
+      document.addEventListener("DOMContentLoaded", function () {
+        jobId = "{{ job_id }}"; // Assign in DOMContentLoaded
+        console.log("DEBUG: jobId:", jobId);
+
+        // Always start processing when the page loads
+        console.log("DEBUG: Starting processing...");
+        fetch(`/start_processing?job_id=${jobId}`)
+          .then((response) => response.json())
+          .then((data) => {
+            console.log("Processing started:", data);
+          })
+          .catch((error) => {
+            console.error("Error starting processing:", error);
+          });
+
+        // Start polling for progress updates
+        startProgressPolling();
+      });
+
+      function updateProgressUI(data) {
+        // Update progress bar
+        const progressBar = document.getElementById("progressBar");
+        const progressText = document.getElementById("progressText");
+
+        if (data.total > 0) {
+          const percentage = Math.round((data.current / data.total) * 100);
+          progressBar.style.width = `${percentage}%`;
+          progressText.textContent = `${data.current}/${data.total} (${percentage}%)`;
+        } else {
+          progressBar.style.width = "0%";
+          progressText.textContent = "0%";
+        }
+
+        // Update step statuses
+        updateStepStatus(data.status);
+
+        // Update current item
+        document.getElementById("currentItemText").textContent =
+          data.current_email || "Initializing...";
+
+        // Update header status
+        document.getElementById("headerStatus").textContent = getStatusMessage(
+          data.status
+        );
+
+        // Update live results if available
+        if (data.live_results && data.live_results.length > 0) {
+          updateLiveResults(data.live_results);
+        }
+
+        // If complete, show results
+        if (data.status === "complete") {
+          document.getElementById("processingCard").style.display = "none";
+          document.getElementById("summaryCard").style.display = "block";
+          document.getElementById("resultsCard").style.display = "block";
+
+          // Update summary counts
+          document.getElementById("processedCount").textContent =
+            data.processed;
+          document.getElementById("includedCount").textContent = data.included;
+
+          // Update included progress bar
+          if (data.processed > 0) {
+            const includedPercentage = Math.round(
+              (data.included / data.processed) * 100
+            );
+            document.getElementById(
+              "includedProgress"
+            ).style.width = `${includedPercentage}%`;
+          }
+
+          // Fetch and display results
+          fetchResults();
+        }
+      }
+
+      function getStatusMessage(status) {
+        switch (status) {
+          case "connecting":
+            return "Connecting to Gmail...";
+          case "searching":
+            return "Searching for job-related emails...";
+          case "analyzing":
+            return "Analyzing email content with Gemini AI...";
+          case "writing":
+            return "Writing results to Google Sheets...";
+          case "finishing":
+            return "Finalizing results...";
+          case "complete":
+            return "Processing complete!";
+          case "error":
+            return "Error occurred during processing";
+          default:
+            return "Processing your emails...";
+        }
+      }
+
+      function fetchResults() {
+        fetch(`/get_results?job_id=${jobId}`)
+          .then((response) => response.json())
+          .then((data) => {
+            if (data.results && data.results.length > 0) {
+              // Clear existing table rows
+              const tableBody = document.getElementById("resultsTableBody");
+              tableBody.innerHTML = "";
+
+              // Add new rows
+              data.results.forEach((record) => {
+                const row = document.createElement("tr");
+                row.className = "border-b border-gray-100";
+
+                // Date
+                let cell = document.createElement("td");
+                cell.className =
+                  "px-4 py-3 whitespace-nowrap text-sm text-gray-600";
+                cell.textContent = record["Date Received"];
+                row.appendChild(cell);
+
+                // Company
+                cell = document.createElement("td");
+                cell.className =
+                  "px-4 py-3 whitespace-nowrap text-sm font-medium text-gray-900";
+                cell.textContent = record["Company Name"];
+                row.appendChild(cell);
+
+                // Job Title
+                cell = document.createElement("td");
+                cell.className =
+                  "px-4 py-3 whitespace-nowrap text-sm text-gray-700";
+                cell.textContent = record["Job Title"];
+                row.appendChild(cell);
+
+                // Status
+                cell = document.createElement("td");
+                cell.className = "px-4 py-3 whitespace-nowrap";
+
+                const status = record["Status"];
+                let statusHTML = "";
+
+                if (status === "Interview Request") {
+                  statusHTML =
+                    '<span class="status-badge status-interview"><i class="fas fa-user-tie mr-1"></i> Interview</span>';
+                } else if (status === "Assessment Request") {
+                  statusHTML =
+                    '<span class="status-badge status-assessment"><i class="fas fa-tasks mr-1"></i> Assessment</span>';
+                } else if (status === "Offer") {
+                  statusHTML =
+                    '<span class="status-badge status-offer"><i class="fas fa-check-circle mr-1"></i> Offer</span>';
+                } else if (status === "Rejection") {
+                  statusHTML =
+                    '<span class="status-badge status-rejection"><i class="fas fa-times-circle mr-1"></i> Rejection</span>';
+                } else {
+                  statusHTML = `<span class="status-badge bg-gray-100 text-gray-700">${status}</span>`;
+                }
+
+                cell.innerHTML = statusHTML;
+                row.appendChild(cell);
+
+                // Subject
+                cell = document.createElement("td");
+                cell.className =
+                  "px-4 py-3 text-sm text-gray-500 truncate max-w-xs";
+                cell.title = record["Email Subject"];
+                cell.textContent =
+                  record["Email Subject"].length > 50
+                    ? record["Email Subject"].substring(0, 50) + "..."
+                    : record["Email Subject"];
+                row.appendChild(cell);
+
+                tableBody.appendChild(row);
+              });
+            }
+
+            // Handle errors
+            if (data.errors && data.errors.length > 0) {
+              const errorsCard = document.getElementById("errorsCard");
+              const errorsList = document.getElementById("errorsList");
+
+              errorsCard.style.display = "block";
+              errorsList.innerHTML = "";
+
+              data.errors.forEach((error) => {
+                const li = document.createElement("li");
+                li.className = "text-red-600";
+                li.textContent = error;
+                errorsList.appendChild(li);
+              });
+            }
+          })
+          .catch((error) => {
+            console.error("Error fetching results:", error);
+          });
+      }
+
+      function startProgressPolling() {
+        fetch(`/progress?job_id=${jobId}`)
+          .then((response) => response.json())
+          .then((data) => {
+            console.log("Progress update:", data);
+            updateProgressUI(data);
+
+            // Continue polling if not complete
+            if (data.status !== "complete" && data.status !== "error") {
+              setTimeout(startProgressPolling, 2000); // Poll every 2 seconds
+            } else if (data.status === "error") {
+              // Show error message
+              document.getElementById("headerStatus").textContent =
+                "Error: " + (data.error || "Unknown error occurred");
+
+              // Add to errors list
+              if (data.error) {
+                const errorsCard = document.getElementById("errorsCard");
+                const errorsList = document.getElementById("errorsList");
+
+                errorsCard.style.display = "block";
+                const li = document.createElement("li");
+                li.className = "text-red-600";
+                li.textContent = data.error;
+                errorsList.appendChild(li);
+              }
+            }
+          })
+          .catch((error) => {
+            console.error("Error fetching progress:", error);
+            // Retry after a delay
+            setTimeout(startProgressPolling, 5000);
+          });
+      }
+
+      function updateStepStatus(status) {
+        // Reset all steps
+        document.querySelectorAll(".step-status").forEach((el) => {
+          el.textContent = "Waiting...";
+          el.parentElement.classList.remove("active", "complete");
+        });
+
+        // Update based on current status
+        if (status === "connecting") {
+          setStepActive("step1", "In Progress...");
+        } else if (status === "searching") {
+          setStepComplete("step1");
+          setStepActive("step2", "In Progress...");
+        } else if (status === "analyzing") {
+          setStepComplete("step1");
+          setStepComplete("step2");
+          setStepActive("step3", "In Progress...");
+        } else if (status === "writing") {
+          setStepComplete("step1");
+          setStepComplete("step2");
+          setStepComplete("step3");
+          setStepActive("step4", "In Progress...");
+        } else if (status === "finishing" || status === "complete") {
+          setStepComplete("step1");
+          setStepComplete("step2");
+          setStepComplete("step3");
+          setStepComplete("step4");
+          setStepActive(
+            "step5",
+            status === "complete" ? "Complete" : "In Progress..."
+          );
+        }
+      }
+
+      function setStepActive(stepId, text) {
+        const step = document.getElementById(stepId);
+        step.classList.add("active");
+        const status = step.querySelector(".step-status");
+        if (status) status.textContent = text;
+      }
+
+      function setStepComplete(stepId) {
+        const step = document.getElementById(stepId);
+        step.classList.add("complete");
+        const status = step.querySelector(".step-status");
+        if (status) status.textContent = "Complete";
+      }
+
+      // Add this new function to update live results
+      function updateLiveResults(results) {
+        const liveResultsList = document.getElementById("liveResultsList");
+        const noResultsMessage = document.getElementById("noResultsMessage");
+
+        console.log("DEBUG: updateLiveResults called with results:", results);
+        // Hide the "no results" message if we have results
+        if (results.length > 0) {
+          noResultsMessage.style.display = "none";
+        }
+
+        // Add new results to the list
+        results.forEach((result) => {
+          // Check if this result is already in the list (by email ID or some unique identifier)
+          const existingItem = document.getElementById(`result-${result.id}`);
+          if (existingItem) {
+            return; // Skip if already displayed
+          }
+
+          // Create new result item
+          const resultItem = document.createElement("div");
+          resultItem.id = `result-${result.id}`;
+          resultItem.className = `live-result-item ${getStatusClass(
+            result.status
+          )}`;
+
+          // Create content for the result item
+          let statusIcon = "";
+          switch (result.status) {
+            case "Interview Request":
+              statusIcon = '<i class="fas fa-user-tie text-blue-500 mr-1"></i>';
+              break;
+            case "Assessment Request":
+              statusIcon = '<i class="fas fa-tasks text-indigo-500 mr-1"></i>';
+              break;
+            case "Offer":
+              statusIcon =
+                '<i class="fas fa-check-circle text-green-500 mr-1"></i>';
+              break;
+            case "Rejection":
+              statusIcon =
+                '<i class="fas fa-times-circle text-red-500 mr-1"></i>';
+              break;
+            default:
+              statusIcon = '<i class="fas fa-envelope text-gray-500 mr-1"></i>';
+          }
+
+          resultItem.innerHTML = `
+            <div class="flex justify-between items-start">
+              <div>
+                <div class="font-medium">${
+                  result.company || "Unknown Company"
+                }</div>
+                <div class="text-sm text-gray-600">${
+                  result.job_title || "Unknown Position"
+                }</div>
+              </div>
+              <div class="text-sm font-medium ${getStatusTextColor(
+                result.status
+              )}">
+                ${statusIcon} ${result.status}
+              </div>
+            </div>
+            <div class="text-xs text-gray-500 mt-1 truncate" title="${
+              result.subject || ""
+            }">
+              ${result.subject || "No subject"}
+            </div>
+          `;
+
+          // Add to the list (at the beginning to show newest first)
+          liveResultsList.insertBefore(resultItem, liveResultsList.firstChild);
+        });
+      }
+
+      function getStatusClass(status) {
+        switch (status) {
+          case "Interview Request":
+            return "interview";
+          case "Assessment Request":
+            return "assessment";
+          case "Offer":
+            return "offer";
+          case "Rejection":
+            return "rejection";
+          default:
+            return "";
+        }
+      }
+
+      function getStatusTextColor(status) {
+        switch (status) {
+          case "Interview Request":
+            return "text-blue-600";
+          case "Assessment Request":
+            return "text-indigo-600";
+          case "Offer":
+            return "text-green-600";
+          case "Rejection":
+            return "text-red-600";
+          default:
+            return "text-gray-600";
+        }
+      }
+    </script>
+  </body>
+</html>
