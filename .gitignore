@@ -70,3 +70,6 @@ Thumbs.db
 credentials.json
 credentials_web.json
 credentials_web_2.json
+
+# Google Sheets
+*.xlsx
