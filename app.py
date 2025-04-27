@@ -14,15 +14,18 @@ import google.auth.exceptions
 import requests
 import base64
 import email
+import math
 from email.header import decode_header
 import time
 import gspread
+import logging
 import pandas as pd
 from werkzeug.utils import secure_filename # For potential future file uploads
 import dotenv
 import uuid
 import redis
-
+from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy import inspect, Text
 dotenv.load_dotenv()
 
 # Initialize Redis connection (make sure this is defined)
@@ -50,17 +53,55 @@ except Exception as e:
 # --- Configuration ---
 # Load from environment variables for security in a web app context
 # Users will need to set these before running the app.
-# For local testing, you might use a .env file and python-dotenv
 # DO NOT HARDCODE THESE HERE IN A REAL APPLICATION
+# --- Configuration ---
 CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID")
 CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET")
-SECRET_KEY = os.environ.get("FLASK_SECRET_KEY", "super-secret-key-for-dev-only") # Change for production!
-GEMINI_API_KEY_SESSION_KEY = os.environ.get("GEMINI_API_KEY") # Key to store Gemini key in session
+SECRET_KEY = os.environ.get("FLASK_SECRET_KEY", "super-secret-key-for-dev-only")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+SERPAPI_API_KEY = os.environ.get("SERPAPI_API_KEY")
+# REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0") # Keep if using Redis/RQ
+
+DATABASE_URI = os.environ.get("DATABASE_URL", "sqlite:///./instance/app_data.db")
+UPLOAD_FOLDER = os.environ.get("UPLOAD_FOLDER", "./instance/uploads")
+ALLOWED_EXTENSIONS = {'txt', 'pdf', 'doc', 'docx'}
 
 # --- Flask App Setup ---
-app = Flask(__name__)
+app = Flask(__name__) # Create Flask app instance first
 app.secret_key = SECRET_KEY
-app.config['SESSION_COOKIE_SECURE'] = False # Set to True if using HTTPS
+app.config['SESSION_COOKIE_SECURE'] = os.environ.get('SESSION_COOKIE_SECURE', 'False').lower() == 'true' # Control via env var
+
+# --- IMPORTANT: Ensure Instance/Upload Folders Exist EARLY ---
+instance_path = os.path.join(app.instance_path) # Use Flask's built-in instance_path property
+upload_path = os.path.join(instance_path, 'uploads') # Define upload path relative to instance path
+
+try:
+    if not os.path.exists(instance_path):
+        os.makedirs(instance_path)
+        logging.info(f"Created instance folder: {instance_path}")
+    if not os.path.exists(upload_path):
+        os.makedirs(upload_path)
+        logging.info(f"Created upload folder: {upload_path}")
+except OSError as e:
+     # Log error but allow app to continue; SQLAlchemy will likely fail if instance path creation failed
+     logging.error(f"Error creating instance or upload folder: {e}")
+
+# --- Configure App Settings AFTER creating folders if paths depend on them ---
+# Adjust DB URI to use absolute path to instance folder for robustness
+db_file_path = os.path.join(instance_path, 'app_data.db')
+app.config['SQLALCHEMY_DATABASE_URI'] = f"sqlite:///{db_file_path}"
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config['UPLOAD_FOLDER'] = upload_path # Use the defined absolute upload path
+# app.config['ALLOWED_EXTENSIONS'] = ALLOWED_EXTENSIONS # This isn't a standard Flask config, handle in code
+
+# --- Initialize Extensions AFTER app config is set ---
+db = SQLAlchemy(app)
+
+@app.context_processor
+def inject_now():
+    """Injects the current UTC datetime into the template context."""
+    return {'now': datetime.now(timezone.utc)} # Use timezone.utc for consistency
+
 
 # --- Google OAuth Configuration ---
 # This file is downloaded from Google Cloud Console (OAuth Client ID for Web application)
@@ -82,7 +123,215 @@ SCOPES = [
 # Must match exactly! For local dev, often http://127.0.0.1:5000/callback
 REDIRECT_URI = os.environ.get("GOOGLE_REDIRECT_URI", "http://127.0.0.1:5000/callback")
 
+# --- Database Model ---
+class UserProfile(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    google_id = db.Column(db.String(100), unique=True, nullable=False)
+    name = db.Column(db.String(150))
+    email = db.Column(db.String(150))
+    phone = db.Column(db.String(50))
+    address = db.Column(db.String(300))
+    linkedin_url = db.Column(db.String(255))
+    portfolio_url = db.Column(db.String(255))
+    resume_text = db.Column(db.Text) # For pasted resume content
+    resume_filename = db.Column(db.String(255))
+    resume_filepath = db.Column(db.String(512))
+    extracted_resume_json = db.Column(Text) # Store extracted data as JSON string in Text field
+    last_updated = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def __repr__(self):
+        return f'<UserProfile {self.email or self.google_id}>'
+
+with app.app_context():
+    try:
+        inspector = inspect(db.engine)
+        if not inspector.has_table(UserProfile.__tablename__):
+            logging.info(f"Creating database table '{UserProfile.__tablename__}'...")
+            db.create_all()
+            logging.info("Database table created.")
+        else:
+            logging.info(f"Database table '{UserProfile.__tablename__}' already exists.")
+    except Exception as e:
+        logging.error(f"Error during database table check/creation: {e}")
 # --- Helper Functions ---
+
+def call_serpapi_google_jobs(query, location="None", start=0):
+    """Calls the SerpApi Google Jobs endpoint."""
+    if not SERPAPI_API_KEY:
+        logging.error("SERPAPI_API_KEY environment variable not set.")
+        return {"error": "Job search API key is not configured."}
+
+    base_url = "https://serpapi.com/search"
+    params = {
+        "engine": "google_jobs",
+        "q": query,
+        "hl": "en",
+        "gl": "us",
+        "location": location,
+        # "start": start, # For pagination
+        "api_key": SERPAPI_API_KEY
+    }
+
+    try:
+        logging.info(f"Calling SerpApi Google Jobs: q='{query}', location='{location}', start={start}")
+        response = requests.get(base_url, params=params, timeout=20) # Add timeout
+        response.raise_for_status() # Raise an exception for bad status codes (4xx or 5xx)
+        data = response.json()
+        logging.info(f"SerpApi returned {len(data.get('jobs_results', []))} jobs.")
+        return data
+    except requests.exceptions.RequestException as e:
+        logging.error(f"SerpApi request failed: {e}")
+        return {"error": f"Failed to connect to job search service: {e}"}
+    except json.JSONDecodeError:
+        logging.error(f"Failed to decode SerpApi JSON response. Status: {response.status_code}, Body: {response.text[:200]}...")
+        return {"error": "Received invalid response from job search service."}
+    except Exception as e:
+        logging.error(f"An unexpected error occurred during SerpApi call: {e}", exc_info=True)
+        return {"error": f"An unexpected error occurred while searching for jobs: {e}"}
+
+def parse_serpapi_jobs(api_response):
+    """Parses the jobs_results from the SerpApi response into a standard format."""
+    if "error" in api_response:
+        logging.warning(f"Cannot parse jobs, API response contained an error: {api_response['error']}")
+        return [] # Return empty list on error
+
+    jobs_results = api_response.get("jobs_results", [])
+    parsed_jobs = []
+
+    for job in jobs_results:
+        # Extract relevant fields, providing defaults if keys are missing
+        title = job.get("title", "N/A")
+        company = job.get("company_name", "N/A")
+        location = job.get("location", "N/A")
+        description = job.get("description", "")
+        # Try to find a direct link, fallback to google jobs link if needed
+        job_link = "#" # Default placeholder
+        related_links = job.get('related_links', [])
+        if related_links and isinstance(related_links, list) and len(related_links) > 0:
+             job_link = related_links[0].get('link', '#') # Take the first related link if available
+        elif job.get('job_id'): # Fallback to constructing a google jobs link maybe? Requires more info.
+             # For simplicity, we'll just use '#' if no direct link found
+             pass
+
+        # Add highlights if available
+        highlights = job.get('job_highlights', [])
+        if highlights and isinstance(highlights, list):
+            highlight_text = "\n".join([h.get('title', '') + (": " + ", ".join(h.get('items',[])) if h.get('items') else "") for h in highlights if h.get('title')])
+            if highlight_text:
+                description += "\n\nHighlights:\n" + highlight_text
+
+        parsed_jobs.append({
+            'id': job.get("job_id", f"serp_{uuid.uuid4()}"), # Use SerpApi job_id or generate one
+            'title': title,
+            'company': company,
+            'location': location,
+            'description': description.strip(),
+            'url': job_link, # Use the extracted link
+            'source': job.get('via', 'Google Jobs') # Indicate the source
+        })
+
+    return parsed_jobs
+
+def extract_resume_data_with_gemini(resume_text):
+    """
+    Uses Gemini to extract structured data (skills, experience, education) from resume text.
+
+    Args:
+        resume_text: The raw text content of the resume.
+
+    Returns:
+        A JSON string containing the extracted data, or None if an error occurs or text is empty.
+    """
+    if not resume_text or not resume_text.strip():
+        logging.info("Resume text is empty, skipping Gemini processing.")
+        return None
+
+    gemini_api_key = os.environ.get("GEMINI_API_KEY")
+    if not gemini_api_key:
+        logging.error("Gemini API Key is missing for resume processing.")
+        # Return None or raise an error depending on desired handling
+        return None
+
+    # Define the desired JSON structure
+    # Be very specific about the format you want Gemini to return.
+    prompt = f"""
+    Analyze the following resume text and extract key information into a structured JSON format.
+
+    **Instructions:**
+    1.  Parse the text to identify sections like Contact Info, Summary/Objective, Work Experience, Education, Skills, Projects, etc.
+    2.  Extract relevant details for each section.
+    3.  Format the output STRICTLY as a single JSON object containing the following keys:
+        * `summary`: (String) The summary or objective statement, if present. Null if not found.
+        * `skills`: (List of Strings) A list of identified skills (technical, soft, languages). Empty list if none found.
+        * `work_experience`: (List of Objects) Each object should have:
+            * `company`: (String) Company name.
+            * `job_title`: (String) Job title.
+            * `dates`: (String) Employment dates (e.g., "Jan 2020 - Present", "2019-2021").
+            * `description`: (String) Responsibilities and achievements (combine bullet points into a single string with newlines '\\n').
+        * `education`: (List of Objects) Each object should have:
+            * `institution`: (String) Name of the school/university.
+            * `degree`: (String) Degree obtained (e.g., "B.S. Computer Science").
+            * `dates`: (String) Attendance dates or graduation date.
+            * `details`: (String, Optional) Any relevant details like GPA, honors, relevant coursework.
+        * `projects`: (List of Objects, Optional) Each object should have:
+            * `name`: (String) Project name.
+            * `description`: (String) Brief description of the project.
+            * `technologies`: (List of Strings, Optional) Technologies used.
+
+    4.  If a section (like projects) is not found, omit the key or set its value to an empty list/null as appropriate based on the schema defined above.
+    5.  Ensure the output is a single, valid JSON object and nothing else. Do not include explanations or markdown formatting.
+
+    **Resume Text:**
+    ---
+    {resume_text[:15000]}
+    ---
+
+    **JSON Output:**
+    """
+
+    try:
+        genai.configure(api_key=gemini_api_key)
+        # Use a model suitable for structured data extraction, like Pro or potentially Flash
+        # Consider Gemini 1.5 Pro if available and needing larger context or better JSON adherence
+        model = genai.GenerativeModel('gemini-1.5-flash') # Or 'gemini-pro'
+
+        logging.info("Calling Gemini API to process resume text...")
+        response = model.generate_content(
+            prompt,
+            # Enforce JSON output if the model/API supports it reliably
+            generation_config=genai.types.GenerationConfig(
+                temperature=0.1,
+                response_mime_type="application/json"
+            )
+        )
+
+        # Attempt to parse the JSON response directly
+        response_text = response.text.strip()
+        logging.debug(f"Raw Gemini Resume Response: {response_text[:200]}...") # Log beginning of response
+
+        # Basic cleanup (sometimes models wrap in markdown even with mime type set)
+        if response_text.startswith("```json"):
+            response_text = response_text[len("```json"):].strip()
+        if response_text.endswith("```"):
+            response_text = response_text[:-len("```")].strip()
+
+        # Validate that it's parsable JSON
+        parsed_json = json.loads(response_text)
+
+        # Return the valid JSON string
+        logging.info("Successfully processed resume text with Gemini.")
+        return json.dumps(parsed_json, indent=2) # Store pretty-printed JSON string
+
+    except json.JSONDecodeError as json_err:
+        logging.error(f"Failed to parse JSON response from Gemini for resume: {json_err}")
+        logging.error(f"Gemini Raw Response causing JSON error: {response.text}")
+        return json.dumps({"error": "Failed to parse Gemini response as JSON.", "raw_response": response.text})
+    except Exception as e:
+        # Catch other potential errors (API connection, rate limits, etc.)
+        logging.error(f"Error calling Gemini API for resume processing: {e}", exc_info=True)
+        # Store an error indicator in the JSON
+        return json.dumps({"error": f"Gemini API call failed: {str(e)}"})
+
 
 def get_google_credentials():
     """Gets Google credentials from the session.
@@ -151,6 +400,10 @@ def save_google_credentials(credentials):
     """Saves Google credentials to the session."""
     session['credentials'] = credentials.to_json()
 
+def allowed_file(filename):
+    return '.' in filename and \
+           filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
 def build_google_service(service_name, version):
     """Builds and returns a Google API service."""
     try:
@@ -169,12 +422,82 @@ def build_google_service(service_name, version):
             print("DEBUG: Refreshing expired token")
             credentials.refresh(GoogleAuthRequest())
             
-        service = build(service_name, version, credentials=credentials)
-        print(f"DEBUG: Successfully built {service_name} service")
-        return service
+        try:
+            service = build(service_name, version, credentials=credentials)
+            return service
+        except Exception as e:
+            print(f"DEBUG: Error building {service_name} service: {str(e)}")
+            # Handle specific auth errors if possible
+            if isinstance(e, HttpError) and e.resp.status in [401, 403]:
+                flash("Authentication error accessing Google Services. Please log in again.", "danger")
+                session.clear() # Clear session on auth failure
+            return None
+    
     except Exception as e:
         print(f"DEBUG: Error building {service_name} service: {str(e)}")
         return None
+    
+def generate_job_titles_with_gemini(keywords):
+    """
+    Uses Gemini to suggest relevant job titles based on input keywords.
+
+    Args:
+        keywords: A list of strings (skills, technologies, etc.).
+
+    Returns:
+        A list of suggested job title strings, or an empty list if error/no results.
+    """
+    if not keywords:
+        return []
+
+    if not GEMINI_API_KEY:
+        logging.error("Gemini API Key is missing for job title generation.")
+        return []
+
+    # Limit keywords sent to Gemini
+    keywords_str = ", ".join(keywords[:15]) # Send up to 15 keywords
+
+    prompt = f"""
+    Analyze the following list of skills, technologies, and potential keywords extracted from a user's resume:
+    Keywords: {keywords_str}
+
+    Based ONLY on these keywords, suggest 2-3 common and relevant job titles that someone with these skills might search for.
+    Focus on standard industry titles suitable for querying a job search engine (like Google Jobs).
+    Avoid overly niche or extremely specific titles unless strongly implied by multiple keywords.
+
+    Output ONLY a comma-separated list of the suggested job titles. Do not include explanations, numbering, or any other text.
+
+    Example Output:
+    Software Engineer, Backend Developer, Python Developer
+
+    Output:
+    """
+
+    try:
+        genai.configure(api_key=GEMINI_API_KEY)
+        model = genai.GenerativeModel('gemini-2.0-flash') # Use Flash for this task
+
+        logging.info(f"Calling Gemini to generate job titles from keywords: {keywords_str}")
+        response = model.generate_content(
+            prompt,
+            generation_config=genai.types.GenerationConfig(temperature=0.2) # Slightly creative but focused
+        )
+
+        response_text = response.text.strip()
+        logging.info(f"Gemini suggested titles raw response: {response_text}")
+
+        # Simple parsing: split by comma, strip whitespace
+        suggested_titles = [title.strip() for title in response_text.split(',') if title.strip()]
+
+        # Basic validation/cleanup (optional)
+        valid_titles = [t for t in suggested_titles if len(t) > 3 and len(t) < 50] # Filter out very short/long titles
+
+        logging.info(f"Parsed suggested job titles: {valid_titles}")
+        return valid_titles[:3] # Return max 3 titles
+
+    except Exception as e:
+        logging.error(f"Error calling Gemini API for job title generation: {e}", exc_info=True)
+        return []
 
 def decode_email_part(part):
     """Decodes email subject or sender."""
@@ -300,8 +623,8 @@ def extract_job_info_with_gemini(gemini_key, subject, body, date_received):
 def index():
     """Home page: Shows login status and form to start processing."""
     user_info = session.get('user_info')
-    gemini_key_set = GEMINI_API_KEY_SESSION_KEY in session
-    return render_template('index.html', user_info=user_info, gemini_key_set=gemini_key_set)
+    gemini_key_set = GEMINI_API_KEY in session
+    return render_template('index.html', user_info=user_info, gemini_key_set=gemini_key_set, now=datetime.now())
 
 @app.route('/login')
 def login():
@@ -332,6 +655,7 @@ def login():
 def callback():
     """Handles the redirect from Google after user authorization."""
     # Verify the state parameter to prevent CSRF
+
     state = session.pop('oauth_state', None)
     if state is None or state != request.args.get('state'):
         flash('Invalid state parameter. Authentication failed.', 'danger')
@@ -355,7 +679,13 @@ def callback():
         try:
             user_info_service = build('oauth2', 'v2', credentials=credentials)
             user_info = user_info_service.userinfo().get().execute()
-            session['user_info'] = user_info # Store user info
+            # --- Store Google ID in session ---
+            session['user_info'] = {
+                'email': user_info.get('email'),
+                'name': user_info.get('name'),
+                'picture': user_info.get('picture'),
+                'google_id': user_info.get('id') # IMPORTANT: Store the unique Google ID
+            }
             flash(f"Successfully logged in as {user_info.get('email', 'Unknown')}", "success")
         except HttpError as e:
             flash(f"Could not fetch user info: {e}", "warning")
@@ -367,6 +697,330 @@ def callback():
         flash(f"Error during authentication callback: {e}", "danger")
         return redirect(url_for('index'))
 
+@app.route('/profile', methods=['GET', 'POST'])
+def profile():
+    if 'user_info' not in session or not session['user_info'].get('google_id'):
+        flash("Please log in to view or edit your profile.", "warning")
+        return redirect(url_for('login'))
+
+    google_id = session['user_info']['google_id']
+    user_profile = UserProfile.query.filter_by(google_id=google_id).first()
+
+    if request.method == 'POST':
+        # --- Process form submission ---
+        try:
+            if not user_profile:
+                # Create new profile if one doesn't exist
+                user_profile = UserProfile(google_id=google_id, email=session['user_info'].get('email'))
+                db.session.add(user_profile)
+
+            # Update fields from form
+            user_profile.name = request.form.get('name', user_profile.name)
+            user_profile.phone = request.form.get('phone', user_profile.phone)
+            user_profile.address = request.form.get('address', user_profile.address)
+            user_profile.linkedin_url = request.form.get('linkedin_url', user_profile.linkedin_url)
+            user_profile.portfolio_url = request.form.get('portfolio_url', user_profile.portfolio_url)
+            user_profile.resume_text = request.form.get('resume_text', user_profile.resume_text)
+            # Ensure email from session is stored if profile was just created
+            if not user_profile.email:
+                 user_profile.email = session['user_info'].get('email')
+
+            # --- Process Resume Text ---
+            new_resume_text = request.form.get('resume_text')
+            # Check if text has actually changed or if it's the first time saving text
+            process_resume = (new_resume_text and new_resume_text != user_profile.resume_text) or \
+                             (new_resume_text and not user_profile.extracted_resume_json)
+
+            user_profile.resume_text = new_resume_text # Update the raw text field
+
+            if process_resume:
+                flash("Processing resume text with AI... This may take a moment.", "info")
+                # Call Gemini function - This might take a few seconds!
+                extracted_data_json = extract_resume_data_with_gemini(new_resume_text)
+                if extracted_data_json:
+                    user_profile.extracted_resume_json = extracted_data_json
+                    logging.info(f"Stored extracted resume JSON for user {google_id}")
+                else:
+                    # Handle case where Gemini processing failed or returned None
+                    logging.warning(f"Gemini resume processing returned no data for user {google_id}")
+                    # Optionally clear old data or keep it? Let's clear it if processing was attempted.
+                    user_profile.extracted_resume_json = json.dumps({"error": "Resume processing failed or text was empty."})
+            elif not new_resume_text:
+                 # If resume text was cleared, clear the extracted data too
+                 user_profile.extracted_resume_json = None
+
+            # --- Handle File Upload ---
+            
+            resume_file = request.files.get('resume_file')
+            if resume_file and resume_file.filename != '':
+                if allowed_file(resume_file.filename):
+                    filename = secure_filename(f"{google_id}_{resume_file.filename}") # Add google_id prefix for uniqueness
+                    filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+
+                    # --- Optional: Delete old file if replacing ---
+                    if user_profile.resume_filepath and os.path.exists(user_profile.resume_filepath):
+                         try:
+                             os.remove(user_profile.resume_filepath)
+                             logging.info(f"Deleted old resume file: {user_profile.resume_filepath}")
+                         except OSError as e:
+                             logging.warning(f"Could not delete old resume file {user_profile.resume_filepath}: {e}")
+
+                    # --- Save new file ---
+                    resume_file.save(filepath)
+                    user_profile.resume_filename = resume_file.filename # Store original name
+                    user_profile.resume_filepath = filepath # Store full path
+                    logging.info(f"Saved new resume file: {filepath} for user {google_id}")
+                else:
+                    flash("Invalid file type for resume. Allowed types: txt, pdf, doc, docx", "warning")
+            elif request.form.get('delete_resume') == 'true':
+                 # --- Handle Deletion Request ---
+                 if user_profile.resume_filepath and os.path.exists(user_profile.resume_filepath):
+                      try:
+                          os.remove(user_profile.resume_filepath)
+                          logging.info(f"Deleted resume file via request: {user_profile.resume_filepath}")
+                          user_profile.resume_filename = None
+                          user_profile.resume_filepath = None
+                      except OSError as e:
+                          logging.warning(f"Could not delete resume file {user_profile.resume_filepath}: {e}")
+                          flash("Could not delete the stored resume file.", "danger")
+                 else:
+                      # Clear DB fields even if file didn't exist
+                      user_profile.resume_filename = None
+                      user_profile.resume_filepath = None
+
+
+
+            db.session.commit()
+            flash("Profile updated successfully!", "success")
+            # Stay on profile page after saving
+            return redirect(url_for('profile'))
+
+        except Exception as e:
+            db.session.rollback() # Rollback changes on error
+            logging.error(f"Error updating profile for {google_id}: {e}")
+            flash(f"An error occurred while updating your profile: {e}", "danger")
+
+    extracted_data = None
+    if user_profile and user_profile.extracted_resume_json:
+        try:
+            extracted_data = json.loads(user_profile.extracted_resume_json)
+        except json.JSONDecodeError:
+            logging.warning(f"Could not parse stored JSON for user {google_id}")
+            extracted_data = {"error": "Stored resume data is corrupted."} # Provide error feedback
+
+    # --- GET Request: Render the form ---
+    # If profile doesn't exist yet, pass an empty object or None
+    if not user_profile:
+         # Pre-populate email and name from Google session info if available
+         user_profile = UserProfile(
+             google_id=google_id,
+             email=session['user_info'].get('email'),
+             name=session['user_info'].get('name')
+         )
+
+    return render_template('profile.html', profile=user_profile, user_info=session.get('user_info'), now=datetime.now(), extracted_data=extracted_data) # Pass parsed data to template
+
+@app.route('/jobs')
+def jobs():
+    """Displays recommended and general job postings using SerpApi."""
+    if 'user_info' not in session or not session['user_info'].get('google_id'):
+        flash("Please log in to view job recommendations.", "warning")
+        return redirect(url_for('login'))
+
+    if not SERPAPI_API_KEY:
+         flash("Job search functionality is currently unavailable (API key missing).", "warning")
+         return render_template('jobs.html', recommended_jobs=[], general_jobs=[], user_info=session.get('user_info'), api_error=True)
+
+    try:
+        page = int(request.args.get('page', 1))
+    except ValueError:
+        page = 1
+    if page < 1: page = 1
+    results_per_page = 6 # How many results to SHOW per page
+
+
+    google_id = session['user_info']['google_id']
+    user_profile = UserProfile.query.filter_by(google_id=google_id).first()
+
+    recommended_jobs_all = []
+    recommended_jobs_page = []
+    general_jobs_all = [] # Store all fetched general jobs here
+    general_jobs_page = [] # Store the slice for the current page
+    profile_keywords = []
+    user_location = "United States" # Default location
+
+    if user_profile:
+        # Get location
+        if user_profile.address:
+             parts = user_profile.address.split(',')
+             if len(parts) >= 2:
+                 potential_loc = f"{parts[-2].strip()}, {parts[-1].strip()}"
+                 if potential_loc: user_location = potential_loc
+
+        # Extract and filter keywords
+        if user_profile.extracted_resume_json:
+            try:
+                extracted_data = json.loads(user_profile.extracted_resume_json)
+                skills = extracted_data.get('skills', [])
+                titles = [exp.get('job_title', '') for exp in extracted_data.get('work_experience', [])]
+
+                # Filter keywords: prioritize skills, check length, avoid overly generic/problematic terms
+                potential_keywords = list(set(
+                    [s.strip() for s in skills if s and isinstance(s, str)] +
+                    [t.strip() for t in titles if t and isinstance(t, str)]
+                ))
+
+                # --- Keyword Filtering Logic ---
+                filtered_keywords = []
+                # Avoid very short terms unless known acronyms/langs (customize this list)
+                allowed_short_terms = {'ai', 'ml', 'go', 'aws', 'api', 'qa', 'ux', 'ui', 'c#', 'f#', 'r'}
+                ignore_terms = {'and', 'or', 'the', 'for', 'with', 'llc', 'inc', 'corp'} # Example ignore list
+
+                for k in potential_keywords:
+                    k_lower = k.lower()
+                    # Check length or if it's an allowed short term
+                    if len(k) >= 3 or k_lower in allowed_short_terms:
+                         # Check against ignore list
+                        if k_lower not in ignore_terms:
+                            # Avoid terms that are likely just parts of titles or too abstract for job search
+                            if 'engineer' not in k_lower and 'developer' not in k_lower and 'manager' not in k_lower and 'specialist' not in k_lower and 'completeness' not in k_lower:
+                                filtered_keywords.append(k) # Keep original casing for quoting if needed
+
+                if filtered_keywords:
+                    profile_keywords = filtered_keywords
+                    suggested_titles = generate_job_titles_with_gemini(profile_keywords)
+
+                    logging.info(f"Using FILTERED keywords from profile: {profile_keywords}")
+                else:
+                     logging.info("No suitable keywords found after filtering profile JSON.")
+
+            except json.JSONDecodeError:
+                logging.warning(f"Could not parse extracted_resume_json for user {google_id}")
+            except Exception as e:
+                 logging.error(f"Error processing profile data for keywords: {e}")
+        else:
+             logging.info("No extracted resume JSON found for keywords.")
+
+    # --- Prepare Search Queries ---
+    if not profile_keywords:
+        profile_keywords = ["software engineer", "python developer"] # More targeted fallback
+        flash("No specific skills found or extracted from your profile. Showing general software jobs. Update your profile's resume text for better recommendations.", "info")
+
+    # Create query string: Quote phrases/multi-word terms, limit count
+    # Use only the first 5-7 filtered keywords
+    # Limit to 6 keywords to avoid overly complex queries
+    query_terms = []
+    for k in profile_keywords[:6]:
+        if ' ' in k:
+            query_terms.append(f'"{k}"') # Quote multi-word terms
+        else:
+            query_terms.append(k)
+   
+    general_query = "All Jobs" # Simpler general query
+
+    # --- Prepare Search Queries ---
+    recommended_query = ""
+    if suggested_titles:
+        # Use titles generated by Gemini
+        recommended_query = " OR ".join(f'"{t}"' for t in suggested_titles) # Quote titles
+        logging.info(f"Using Gemini suggested titles for query: '{recommended_query}'")
+    elif profile_keywords:
+        # Fallback 1: Use filtered keywords if title generation failed/empty
+        query_terms = []
+        for k in profile_keywords[:6]: # Limit to 6 keywords
+            if ' ' in k: query_terms.append(f'"{k}"')
+            else: query_terms.append(k)
+        recommended_query = " OR ".join(query_terms)
+        logging.info(f"Using filtered keywords for query (Gemini fallback): '{recommended_query}'")
+        flash("Could not generate specific job titles from profile, using keywords instead.", "info")
+    else:
+        # Fallback 2: Use generic default if no keywords found at all
+        recommended_query = "software engineer OR python developer"
+        logging.info(f"Using default keywords for query: '{recommended_query}'")
+        flash("No specific skills found in profile. Showing general software jobs. Update your profile for better recommendations.", "info")
+    
+    # --- Call SerpApi ---
+    logging.info(f"Attempting recommended search with query: '{recommended_query}' and location: '{user_location}'")
+    recommended_response = call_serpapi_google_jobs(recommended_query, user_location)
+    recommended_jobs_all = parse_serpapi_jobs(recommended_response)
+    print(f"DEBUG: number of recommended jobs: {len(recommended_jobs_all)}")
+    if "error" in recommended_response:
+         flash(f"Could not fetch recommended jobs: {recommended_response['error']}", "warning")
+         logging.warning(f"SerpApi error for recommended jobs: {recommended_response['error']}")
+
+    else:
+        # --- Perform Pagination on the Fetched Results ---
+        total_fetched_results = len(recommended_jobs_all)
+        logging.info(f"Total recommended jobs fetched for pagination: {total_fetched_results}")
+
+        if total_fetched_results > 0:
+            start_slice_index = (page - 1) * results_per_page
+            end_slice_index = start_slice_index + results_per_page
+            recommended_jobs_page = recommended_jobs_all[start_slice_index:end_slice_index] # Slice the list
+
+            total_pages = math.ceil(total_fetched_results / results_per_page)
+
+            recommended_pagination_info = {
+                "current_page": page,
+                "total_pages": total_pages,
+                "has_prev": page > 1,
+                "has_next": page < total_pages,
+                "prev_num": page - 1 if page > 1 else None,
+                "next_num": page + 1 if page < total_pages else None,
+                "total_results": total_fetched_results # Add total count for info
+            }
+            logging.info(f"Pagination info (manual slicing): {recommended_pagination_info}")
+        else:
+             logging.info("No recommended jobs returned by API.")
+             recommended_jobs_page = [] # Ensure it's an empty list
+             # Set pagination info to indicate no results/pages
+             recommended_pagination_info = { "current_page": 1, "total_pages": 0, "has_prev": False, "has_next": False, "total_results": 0 }
+
+    # Fetch General Jobs
+    logging.info(f"Attempting general search with query: '{general_query}' and location: '{user_location}'")
+    general_response = call_serpapi_google_jobs(general_query, user_location)
+    general_jobs_all = parse_serpapi_jobs(general_response)
+    print(f"DEBUG: number of general jobs: {len(general_jobs_all)}")
+    if "error" in general_response:
+         flash(f"Could not fetch general jobs: {general_response['error']}", "warning")
+         logging.warning(f"SerpApi error for general jobs: {general_response['error']}")
+
+    else:
+        # --- Perform Pagination on the Fetched Results ---
+        total_fetched_results = len(general_jobs_all)
+        logging.info(f"Total general jobs fetched for pagination: {total_fetched_results}")
+
+        if total_fetched_results > 0:
+            start_slice_index = (page - 1) * results_per_page
+            end_slice_index = start_slice_index + results_per_page
+            general_jobs_page = general_jobs_all[start_slice_index:end_slice_index] # Slice the list
+
+            total_pages = math.ceil(total_fetched_results / results_per_page)
+
+            general_pagination_info = {
+                "current_page": page,
+                "total_pages": total_pages,
+                "has_prev": page > 1,
+                "has_next": page < total_pages,
+                "prev_num": page - 1 if page > 1 else None,
+                "next_num": page + 1 if page < total_pages else None,
+                "total_results": total_fetched_results # Add total count for info
+            }
+            logging.info(f"Pagination info (manual slicing): {general_pagination_info}")
+        else:
+            logging.info("No general jobs returned by API.")
+            general_jobs_page = [] # Ensure it's an empty list
+            # Set pagination info to indicate no results/pages
+            general_pagination_info = { "current_page": 1, "total_pages": 0, "has_prev": False, "has_next": False, "total_results": 0 }
+
+    return render_template('jobs.html',
+                           recommended_jobs=recommended_jobs_page,
+                           general_jobs=general_jobs_page,
+                           user_info=session.get('user_info'),
+                           api_error=False,
+                           recommended_pagination=recommended_pagination_info,
+                           general_pagination=general_pagination_info) # API was attempted
+                           
 
 @app.route('/logout')
 def logout():
@@ -416,7 +1070,7 @@ def process_emails():
     if not gemini_key:
         flash("Gemini API Key is required.", "danger")
         return redirect(url_for('index'))
-    session[GEMINI_API_KEY_SESSION_KEY] = gemini_key # Store key in session
+    session[GEMINI_API_KEY] = gemini_key # Store key in session
 
     # Get other parameters from form (add more as needed)
     sheet_name = request.form.get('sheet_name', 'Job Application Tracker')
@@ -803,7 +1457,7 @@ def start_processing():
                 update_progress(job_id, 'analyzing', processed_count, len(messages), current_email=subject)
 
                 # Call Gemini
-                extracted_info = extract_job_info_with_gemini(GEMINI_API_KEY_SESSION_KEY, subject, body, date_received)
+                extracted_info = extract_job_info_with_gemini(GEMINI_API_KEY, subject, body, date_received)
                 print(f"DEBUG: Extracted info: {extracted_info}")
                 
                 if extracted_info:
