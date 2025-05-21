@@ -1,0 +1,631 @@
+{% extends "base.html" %} {% block title %}Saved Emails{% endblock %} {% block
+content %}
+<div class="container-fluid my-5 px-md-4 px-lg-5">
+  <header class="page-header mb-5 text-center">
+    <div class="d-inline-flex align-items-center justify-content-center mb-3">
+      <i class="fas fa-archive fa-2x text-primary me-3"></i>
+      <h1 class="display-5 fw-bold m-0">Saved Applications</h1>
+    </div>
+    <hr
+      class="mx-auto bg-primary opacity-50 mt-4"
+      style="width: 80px; height: 3px"
+    />
+  </header>
+
+  {% include '_flash_messages.html' %}
+
+  <div class="row">
+    <div class="col-xl-10 mx-auto">
+      {% if saved_emails %}
+      <div
+        class="row row-cols-1 row-cols-md-2 row-cols-xl-3 g-4 email-list-row"
+      >
+        {% for email in saved_emails %}
+        <div class="col email-card-col" id="saved-email-col-{{ email.id }}">
+          <div
+            class="email-card h-100 d-flex flex-column"
+            data-email-id="{{ email.id }}"
+            data-status="{{ email.extracted_status | lower | replace(' ', '-') }}"
+          >
+            <div class="email-card-header p-3">
+              <div
+                class="d-flex justify-content-between align-items-center mb-2"
+              >
+                <span
+                  class="badge status-badge status-{{ email.extracted_status | lower | replace(' ', '-') }} me-2"
+                >
+                  {{ email.extracted_status or 'Status Unknown' }}
+                </span>
+                <small class="text-muted date-received">
+                  <i class="far fa-calendar-alt me-1"></i>
+                  {{ email.date_received.strftime('%b %d, %Y') if
+                  email.date_received else 'Unknown Date' }}
+                </small>
+              </div>
+              <h5
+                class="email-subject fw-semibold mb-0"
+                title="{{ email.subject or '[No Subject]'}}"
+              >
+                {{ email.subject | truncate(70, True) or '[No Subject]'}}
+              </h5>
+            </div>
+
+            <div class="email-card-body p-3 flex-grow-1">
+              <div class="mb-3">
+                <div class="d-flex align-items-center mb-2">
+                  <div class="icon-avatar me-2">
+                    <i class="fas fa-building text-primary"></i>
+                  </div>
+                  <div>
+                    <small class="text-muted d-block lh-1">From</small>
+                    <div class="fw-medium">{{ email.sender }}</div>
+                  </div>
+                </div>
+                <div class="d-flex align-items-center">
+                  <div class="icon-avatar me-2">
+                    <i class="fas fa-briefcase text-success"></i>
+                  </div>
+                  <div>
+                    <small class="text-muted d-block lh-1">Position</small>
+                    <div class="fw-medium">
+                      {{ email.extracted_job_title or 'N/A' }}
+                    </div>
+                    <small class="text-muted company-name"
+                      >{{ email.extracted_company or 'Unknown Company' }}</small
+                    >
+                  </div>
+                </div>
+              </div>
+
+              <div class="email-snippet-wrapper mb-3">
+                <p class="email-snippet-content m-0 small">
+                  {{ email.body_snippet | truncate(130, True, '...') }}
+                </p>
+              </div>
+            </div>
+
+            <div class="email-card-footer p-3 bg-light">
+              <div
+                class="d-flex justify-content-between align-items-center mb-2"
+              >
+                <a
+                  href="https://mail.google.com/mail/u/1/#inbox/{{ email.gmail_message_id }}"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  class="btn btn-sm btn-outline-primary view-gmail-btn"
+                  title="View original email in Gmail"
+                >
+                  <i class="fas fa-external-link-alt me-1"></i> View Gmail
+                </a>
+                <button
+                  type="button"
+                  class="btn btn-sm btn-outline-danger remove-email-btn"
+                  title="Remove this saved email"
+                  data-email-id="{{ email.id }}"
+                  onclick="deleteEmail('{{ email.id }}')"
+                >
+                  <i class="fas fa-trash-alt"></i>
+                </button>
+              </div>
+              <small
+                class="text-muted fst-italic d-block text-end saved-on-date"
+              >
+                <i class="far fa-clock me-1"></i> Saved: {{
+                email.saved_at.strftime('%b %d, %H:%M') }}
+              </small>
+            </div>
+
+            <!-- Delete Confirmation Modal -->
+            <div
+              class="modal fade"
+              id="confirmDeleteModal-{{ email.id }}"
+              tabindex="-1"
+              aria-labelledby="confirmDeleteModalLabel-{{ email.id }}"
+              aria-hidden="true"
+            >
+              <div class="modal-dialog"></div>
+            </div>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <div
+        class="empty-state-container text-center py-5 px-3 rounded-3"
+        id="emptyStateContainer"
+      >
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          width="72"
+          height="72"
+          fill="currentColor"
+          class="bi bi-inbox-fill mb-4 text-primary opacity-75"
+          viewBox="0 0 16 16"
+        >
+          <path
+            d="M4.98 1a.5.5 0 0 0-.39.188L1.54 5H6a.5.5 0 0 1 .5.5 1.5 1.5 0 1 0 3 0A.5.5 0 0 1 10 5h4.46l-3.05-3.812A.5.5 0 0 0 11.02 1H4.98zM3.81.563A1.5 1.5 0 0 1 4.98 0h6.04a1.5 1.5 0 0 1 1.17.563l3.7 4.625a.5.5 0 0 1 .029.257V15a1 1 0 0 1-1 1H1a1 1 0 0 1-1-1V5.445a.5.5 0 0 1 .029-.257L3.81.563zM.125 6.17A.5.5 0 0 1 .5 6H1v7a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V6h.5a.5.5 0 0 1 .375.17l1.481 1.851A1.5 1.5 0 0 1 15.985 9H14.5v2.5A1.5 1.5 0 0 1 13 13h-2a1.5 1.5 0 0 1-1.5-1.5V9H6.5v2.5A1.5 1.5 0 0 1 5 13H3a1.5 1.5 0 0 1-1.5-1.5V9H.015a1.5 1.5 0 0 1-.003-.979l1.48-1.85z"
+          />
+        </svg>
+        <h3 class="fw-light mb-3">Your Saved Emails List is Empty</h3>
+        <p class="text-muted mb-4 lead">
+          No job application emails saved yet. <br />Try processing your Gmail
+          inbox to find relevant communications.
+        </p>
+        <a
+          href="{{ url_for('index') }}#process-section"
+          class="btn btn-lg btn-primary rounded-pill px-4 py-2 shadow-sm"
+        >
+          <i class="fas fa-cogs me-2"></i> Process Gmail Inbox
+        </a>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+<template id="emptyStateTemplate">
+  <div class="empty-state-container text-center py-5 px-3 rounded-3">
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width="72"
+      height="72"
+      fill="currentColor"
+      class="bi bi-inbox-fill mb-4 text-primary opacity-75"
+      viewBox="0 0 16 16"
+    >
+      <path
+        d="M4.98 1a.5.5 0 0 0-.39.188L1.54 5H6a.5.5 0 0 1 .5.5 1.5 1.5 0 1 0 3 0A.5.5 0 0 1 10 5h4.46l-3.05-3.812A.5.5 0 0 0 11.02 1H4.98zM3.81.563A1.5 1.5 0 0 1 4.98 0h6.04a1.5 1.5 0 0 1 1.17.563l3.7 4.625a.5.5 0 0 1 .029.257V15a1 1 0 0 1-1 1H1a1 1 0 0 1-1-1V5.445a.5.5 0 0 1 .029-.257L3.81.563zM.125 6.17A.5.5 0 0 1 .5 6H1v7a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V6h.5a.5.5 0 0 1 .375.17l1.481 1.851A1.5 1.5 0 0 1 15.985 9H14.5v2.5A1.5 1.5 0 0 1 13 13h-2a1.5 1.5 0 0 1-1.5-1.5V9H6.5v2.5A1.5 1.5 0 0 1 5 13H3a1.5 1.5 0 0 1-1.5-1.5V9H.015a1.5 1.5 0 0 1-.003-.979l1.48-1.85z"
+      />
+    </svg>
+    <h3 class="fw-light mb-3">Your Saved Emails List is Empty</h3>
+    <p class="text-muted mb-4 lead">
+      All emails have been removed or none were found. <br />Try processing your
+      Gmail inbox again.
+    </p>
+    <a
+      href="{{ url_for('index') }}#process-section"
+      class="btn btn-lg btn-primary rounded-pill px-4 py-2 shadow-sm"
+    >
+      <i class="fas fa-cogs me-2"></i> Process Gmail Inbox
+    </a>
+  </div>
+</template>
+
+<style>
+  @import url("https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap");
+
+  :root {
+    --primary-color: #4361ee;
+    --primary-rgb: 67, 97, 238;
+    --success-color: #2ec4b6;
+    --success-rgb: 46, 196, 182;
+    --danger-color: #ff0e22;
+    --danger-rgb: 230, 57, 70;
+    --warning-color: #ff9f1c;
+    --warning-rgb: 255, 159, 28;
+    --info-color: #3a86ff;
+    --info-rgb: 58, 134, 255;
+
+    --body-bg: #f8fafc;
+    --card-bg: #ffffff;
+    --card-border-color: rgba(0, 0, 0, 0.05);
+    --card-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.05),
+      0 4px 6px -2px rgba(0, 0, 0, 0.025);
+    --card-hover-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.07),
+      0 10px 10px -5px rgba(0, 0, 0, 0.04);
+    --card-border-radius: 1rem;
+    --text-muted-light: #94a3b8;
+    --font-family-sans-serif: "Inter", system-ui, -apple-system, sans-serif;
+  }
+
+  body {
+    background-color: var(--body-bg);
+    font-family: var(--font-family-sans-serif);
+    color: #1e293b;
+  }
+
+  .page-header .fa-archive {
+    filter: drop-shadow(0 4px 6px rgba(var(--primary-rgb), 0.3));
+  }
+
+  .email-list-row {
+    gap: 1.5rem !important;
+  }
+
+  .email-card-col {
+    margin-bottom: 1rem;
+  }
+
+  .email-card {
+    background-color: var(--card-bg);
+    border: 1px solid var(--card-border-color);
+    border-radius: var(--card-border-radius);
+    box-shadow: var(--card-shadow);
+    transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
+    border-left-width: 4px;
+    border-left-style: solid;
+    border-left-color: var(--info-color);
+    opacity: 0;
+    transform: translateY(20px);
+    overflow: hidden;
+  }
+
+  .email-card:hover {
+    transform: translateY(-5px);
+    box-shadow: var(--card-hover-shadow);
+  }
+
+  /* Status-specific left border colors */
+  .email-card[data-status="rejected"] {
+    border-left-color: var(--danger-color);
+    background-color: rgba(var(--danger-rgb), 0.03);
+  }
+  .email-card[data-status="interview"] {
+    border-left-color: var(--success-color);
+    background-color: rgba(var(--success-rgb), 0.03);
+  }
+  .email-card[data-status="offer"] {
+    border-left-color: var(--warning-color);
+    background-color: rgba(var(--warning-rgb), 0.03);
+  }
+  .email-card[data-status="new-application"],
+  .email-card[data-status="other"],
+  .email-card[data-status="status-unknown"] {
+    border-left-color: var(--info-color);
+  }
+
+  .email-card-header {
+    border-bottom: 1px solid var(--card-border-color);
+    background-color: rgba(var(--primary-rgb), 0.02);
+  }
+
+  .email-subject {
+    color: #1e293b;
+    font-size: 1.05rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    letter-spacing: -0.01em;
+  }
+
+  .date-received,
+  .saved-on-date {
+    font-size: 0.8rem;
+    color: var(--text-muted-light);
+  }
+
+  .icon-avatar {
+    width: 38px;
+    height: 38px;
+    border-radius: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background-color: rgba(var(--primary-rgb), 0.08);
+    box-shadow: 0 2px 5px rgba(var(--primary-rgb), 0.1);
+  }
+  .icon-avatar .fas {
+    font-size: 0.9rem;
+  }
+
+  .email-snippet-wrapper {
+    background-color: rgba(0, 0, 0, 0.02);
+    padding: 0.8rem 1rem;
+    border-radius: 0.75rem;
+    max-height: 80px;
+    overflow-y: auto;
+    color: #64748b;
+    line-height: 1.6;
+    font-size: 0.875rem;
+    backdrop-filter: blur(5px);
+  }
+  /* Custom scrollbar for snippet */
+  .email-snippet-wrapper::-webkit-scrollbar {
+    width: 4px;
+  }
+  .email-snippet-wrapper::-webkit-scrollbar-thumb {
+    background: rgba(var(--primary-rgb), 0.2);
+    border-radius: 10px;
+  }
+  .email-snippet-wrapper::-webkit-scrollbar-thumb:hover {
+    background: rgba(var(--primary-rgb), 0.3);
+  }
+
+  .status-badge {
+    font-size: 0.7rem;
+    font-weight: 600;
+    padding: 0.4em 0.8em;
+    border-radius: 50px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    border: none;
+    box-shadow: 0 2px 5px rgba(0, 0, 0, 0.05);
+  }
+
+  .status-rejected {
+    background-color: rgba(var(--danger-rgb), 0.1);
+    color: var(--danger-color);
+  }
+  .status-interview {
+    background-color: rgba(var(--success-rgb), 0.1);
+    color: var(--success-color);
+  }
+  .status-offer {
+    background-color: rgba(var(--warning-rgb), 0.1);
+    color: #e67e22; /* Darker orange for better contrast */
+  }
+  .status-new-application,
+  .status-other,
+  .status-status-unknown {
+    background-color: rgba(var(--info-rgb), 0.1);
+    color: var(--info-color);
+  }
+
+  .email-card-footer {
+    background-color: #f8fafc;
+    border-top: 1px solid var(--card-border-color);
+  }
+
+  .email-card-footer .btn {
+    transition: all 0.2s ease-in-out;
+    border-radius: 0.5rem;
+    font-weight: 500;
+  }
+  .email-card-footer .btn:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+  }
+  .email-card-footer .btn-outline-danger:hover {
+    color: #fff;
+  }
+
+  .empty-state-container {
+    background-color: var(--card-bg);
+    border: 2px dashed rgba(var(--primary-rgb), 0.2);
+    box-shadow: var(--card-shadow);
+    border-radius: var(--card-border-radius);
+    padding: 3rem 2rem;
+  }
+
+  .modal-content {
+    border-radius: var(--card-border-radius);
+    border: none;
+    box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+    overflow: hidden;
+  }
+  .modal-header {
+    border-bottom-color: var(--card-border-color);
+    background-color: #f8fafc;
+  }
+
+  /* Card removal animation */
+  .email-card-col.removing {
+    transition: all 0.5s cubic-bezier(0.68, -0.55, 0.27, 1.55);
+    opacity: 0 !important;
+    transform: scale(0.9) !important;
+    max-height: 0 !important;
+    padding-top: 0 !important;
+    padding-bottom: 0 !important;
+    margin-top: 0 !important;
+    margin-bottom: 0 !important;
+    overflow: hidden;
+  }
+</style>
+
+<script>
+  document.addEventListener("DOMContentLoaded", function () {
+    // --- Card Intro Animation ---
+    const emailCards = document.querySelectorAll(".email-card");
+    emailCards.forEach((card, index) => {
+      card.style.transition = `opacity 0.5s ${
+        index * 0.07
+      }s ease-out, transform 0.5s ${
+        index * 0.07
+      }s cubic-bezier(0.25, 0.46, 0.45, 0.94)`;
+      // Trigger reflow
+      void card.offsetWidth;
+      card.style.opacity = "1";
+      card.style.transform = "translateY(0)";
+    });
+
+    // --- AJAX Form Submission for Removing Emails ---
+    const emailListRow = document.querySelector(".email-list-row");
+    const mainContentArea = document.querySelector(".col-xl-10.mx-auto"); // Area to show empty state
+
+    document.querySelectorAll(".ajax-remove-form").forEach((form) => {
+      form.addEventListener("submit", function (event) {
+        event.preventDefault();
+        const formData = new FormData(form);
+        const actionUrl = form.getAttribute("action");
+        const modalElement = form.closest(".modal");
+        const modalInstance = bootstrap.Modal.getInstance(modalElement);
+        const emailColId = modalElement.id.replace(
+          "confirmDeleteModal-",
+          "saved-email-col-"
+        );
+        const emailColToRemove = document.getElementById(emailColId);
+
+        const submitButton = form.querySelector('button[type="submit"]');
+        const originalButtonHTML = submitButton.innerHTML;
+        submitButton.innerHTML = `<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Removing...`;
+        submitButton.disabled = true;
+
+        fetch(actionUrl, {
+          method: "POST",
+          body: formData,
+          headers: {
+            // If using Flask-WTF with CSRF protection for AJAX:
+            // 'X-CSRFToken': '{{ csrf_token() if csrf_token else "" }}'
+          },
+        })
+          .then((response) => {
+            // If server sends back non-JSON for error, or for success without specific JSON
+            if (
+              !response.headers
+                .get("content-type")
+                ?.includes("application/json")
+            ) {
+              if (!response.ok) {
+                throw new Error(
+                  `Server error: ${response.status} ${response.statusText}`
+                );
+              }
+              return { success: true }; // Assume success if not JSON and OK
+            }
+            return response.json();
+          })
+          .then((data) => {
+            if (data.success) {
+              if (modalInstance) {
+                modalInstance.hide();
+              }
+              if (emailColToRemove) {
+                emailColToRemove.classList.add("removing");
+                emailColToRemove.addEventListener(
+                  "transitionend",
+                  () => {
+                    emailColToRemove.remove();
+                    checkIfEmptyAndDisplayMessage();
+                  },
+                  { once: true }
+                );
+              }
+              // Optionally, show a success toast/flash message here via JS
+            } else {
+              console.error("Failed to remove email:", data.message);
+              alert("Error: " + (data.message || "Could not remove email."));
+              // Optionally, show an error toast/flash message here
+            }
+          })
+          .catch((error) => {
+            console.error("Error during AJAX request:", error);
+            alert("An unexpected error occurred: " + error.message);
+          })
+          .finally(() => {
+            submitButton.innerHTML = originalButtonHTML;
+            submitButton.disabled = false;
+          });
+      });
+    });
+
+    function checkIfEmptyAndDisplayMessage() {
+      if (emailListRow && emailListRow.children.length === 0) {
+        const emptyStateTemplate =
+          document.getElementById("emptyStateTemplate");
+        if (emptyStateTemplate && mainContentArea) {
+          // Clear current content of emailListRow's parent if it's the one holding it
+          // Or, if mainContentArea is the direct parent of emailListRow:
+          if (emailListRow.parentNode === mainContentArea) {
+            emailListRow.remove(); // Remove the empty row
+          } else if (emailListRow) {
+            emailListRow.remove(); // Still remove the row itself
+          }
+
+          // Add the empty state message
+          mainContentArea.innerHTML = emptyStateTemplate.innerHTML;
+
+          // Animate the empty state appearing
+          const emptyStateDiv = mainContentArea.querySelector(
+            ".empty-state-container"
+          );
+          if (emptyStateDiv) {
+            emptyStateDiv.style.opacity = "0";
+            emptyStateDiv.style.transform = "translateY(20px)";
+            requestAnimationFrame(() => {
+              // ensure styles applied
+              emptyStateDiv.style.transition =
+                "opacity 0.5s ease, transform 0.5s ease";
+              emptyStateDiv.style.opacity = "1";
+              emptyStateDiv.style.transform = "translateY(0)";
+            });
+          }
+        }
+      }
+    }
+  });
+
+  function deleteEmail(emailId) {
+    // Show loading state
+    const deleteBtn = document.querySelector(`[data-email-id="${emailId}"]`);
+    const originalBtnHTML = deleteBtn.innerHTML;
+    deleteBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+    deleteBtn.disabled = true;
+
+    fetch(`/delete_email/${emailId}`, {
+      method: "DELETE",
+      headers: {
+        "Content-Type": "application/json",
+      },
+    })
+      .then((response) => {
+        if (!response.ok) {
+          throw new Error("Network response was not ok");
+        }
+        return response.json();
+      })
+      .then((data) => {
+        if (data.success) {
+          // Close the modal
+          const modal = bootstrap.Modal.getInstance(
+            document.getElementById(`confirmDeleteModal-${emailId}`)
+          );
+          if (modal) {
+            modal.hide();
+          }
+
+          // Remove the email card from the DOM with animation
+          const emailCard = document
+            .querySelector(`[data-email-id="${emailId}"]`)
+            .closest(".email-card-col");
+
+          if (emailCard) {
+            emailCard.classList.add("removing");
+            emailCard.addEventListener(
+              "transitionend",
+              () => {
+                emailCard.remove();
+                checkIfEmptyAndDisplayMessage();
+              },
+              { once: true }
+            );
+          }
+
+          // Show success message
+          const flashContainer = document.querySelector(".flash-messages");
+          if (flashContainer) {
+            const alert = document.createElement("div");
+            alert.className = "alert alert-success alert-dismissible fade show";
+            alert.innerHTML = `
+                    <i class="fas fa-check-circle me-2"></i>
+                    Email deleted successfully from both Gmail and saved emails.
+                    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                `;
+            flashContainer.appendChild(alert);
+          }
+        } else {
+          throw new Error(data.message || "Failed to delete email");
+        }
+      })
+      .catch((error) => {
+        console.error("Error:", error);
+        // Show error message
+        const flashContainer = document.querySelector(".flash-messages");
+        if (flashContainer) {
+          const alert = document.createElement("div");
+          alert.className = "alert alert-danger alert-dismissible fade show";
+          alert.innerHTML = `
+                <i class="fas fa-exclamation-circle me-2"></i>
+                Failed to delete email: ${error.message}
+                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+            `;
+          flashContainer.appendChild(alert);
+        }
+      })
+      .finally(() => {
+        // Restore button state
+        deleteBtn.innerHTML = originalBtnHTML;
+        deleteBtn.disabled = false;
+      });
+  }
+</script>
+{% endblock %}

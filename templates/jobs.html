@@ -178,9 +178,10 @@ Section #}
     {% endfor %}
   </div>
   {% if recommended_pagination and recommended_pagination.total_pages > 1 %}
-  <nav class="pagination" aria-label="Job search results pages">
+  <nav class="pagination" aria-label="Recommended jobs pagination">
     {# Previous Page Link #} {% if recommended_pagination.has_prev %}
-    <a href="{{ url_for('jobs', page=recommended_pagination.prev_num) }}"
+    <a
+      href="{{ url_for('jobs', page_recommended=recommended_pagination.prev_num, page_general=general_pagination.current_page) }}"
       >&laquo; Previous</a
     >
     {% else %}
@@ -195,7 +196,8 @@ Section #}
     <span class="current">Page {{ recommended_pagination.current_page }}</span>
     {# Show only current if total is 0 #} {% endif %} {# Next Page Link #} {% if
     recommended_pagination.has_next %}
-    <a href="{{ url_for('jobs', page=recommended_pagination.next_num) }}"
+    <a
+      href="{{ url_for('jobs', page_recommended=recommended_pagination.next_num, page_general=general_pagination.current_page) }}"
       >Next &raquo;</a
     >
     {% else %}
@@ -269,9 +271,10 @@ Section #}
     {% endfor %}
   </div>
   {% if general_pagination and general_pagination.total_pages > 1 %}
-  <nav class="pagination" aria-label="Job search results pages">
+  <nav class="pagination" aria-label="General jobs pagination">
     {# Previous Page Link #} {% if general_pagination.has_prev %}
-    <a href="{{ url_for('jobs', page=general_pagination.prev_num) }}"
+    <a
+      href="{{ url_for('jobs', page_general=general_pagination.prev_num, page_recommended=recommended_pagination.current_page) }}"
       >&laquo; Previous</a
     >
     {% else %}
@@ -286,7 +289,8 @@ Section #}
     <span class="current">Page {{ general_pagination.current_page }}</span> {#
     Show only current if total is 0 #} {% endif %} {# Next Page Link #} {% if
     general_pagination.has_next %}
-    <a href="{{ url_for('jobs', page=general_pagination.next_num) }}"
+    <a
+      href="{{ url_for('jobs', page_general=general_pagination.next_num, page_recommended=recommended_pagination.current_page) }}"
       >Next &raquo;</a
     >
     {% else %}

@@ -142,17 +142,56 @@ class UserProfile(db.Model):
     def __repr__(self):
         return f'<UserProfile {self.email or self.google_id}>'
 
+class SavedEmail(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_google_id = db.Column(db.String(100), db.ForeignKey('user_profile.google_id'), nullable=False, index=True)
+    gmail_message_id = db.Column(db.String(100), nullable=False) # Gmail's unique ID for the message
+    subject = db.Column(db.String(500)) # Increased length for potentially long subjects
+    sender = db.Column(db.String(255))
+    date_received = db.Column(db.Date) # Store only the date
+    body_snippet = db.Column(db.Text) # Store a snippet of the body
+    extracted_company = db.Column(db.String(255))
+    extracted_job_title = db.Column(db.String(255))
+    extracted_status = db.Column(db.String(100)) # The status assigned by Gemini
+    saved_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    # Define relationship (optional)
+    user = db.relationship('UserProfile', backref=db.backref('saved_emails', lazy='dynamic', cascade="all, delete-orphan"))
+
+    # Unique constraint per user per email message
+    __table_args__ = (db.UniqueConstraint('user_google_id', 'gmail_message_id', name='_user_email_message_uc'),)
+
+    def __repr__(self):
+        return f'<SavedEmail {self.user_google_id} - {self.subject}>'
+    
 with app.app_context():
     try:
         inspector = inspect(db.engine)
-        if not inspector.has_table(UserProfile.__tablename__):
-            logging.info(f"Creating database table '{UserProfile.__tablename__}'...")
-            db.create_all()
-            logging.info("Database table created.")
+        tables_to_create = []
+        table_models = [UserProfile, SavedEmail] # List all your models here
+
+        for model in table_models:
+            table_name = model.__tablename__
+            if not inspector.has_table(table_name):
+                # Add the actual table object from the model's metadata
+                tables_to_create.append(model.__table__)
+                logging.info(f"Table '{table_name}' marked for creation.")
+            else:
+                logging.info(f"Table '{table_name}' already exists.")
+
+        # Create tables if any are marked
+        if tables_to_create:
+            logging.info(f"Creating database tables: {[t.name for t in tables_to_create]}")
+             # Ensure db.metadata contains all tables before calling create_all
+            db.metadata.create_all(bind=db.engine, tables=tables_to_create)
+            logging.info("Database tables checked/created.")
         else:
-            logging.info(f"Database table '{UserProfile.__tablename__}' already exists.")
+             logging.info("All required database tables already exist.")
+
     except Exception as e:
-        logging.error(f"Error during database table check/creation: {e}")
+        # Log the full traceback for database errors
+        logging.error(f"Error during database table check/creation: {e}", exc_info=True)
+
 # --- Helper Functions ---
 
 def call_serpapi_google_jobs(query, location="None", start=0):
@@ -532,17 +571,33 @@ def get_email_body(message_payload):
          body = base64.urlsafe_b64decode(body_data).decode('utf-8', errors='replace')
 
     return body.strip()
-
 def extract_job_info_with_gemini(gemini_key, subject, body, date_received):
-    """Uses Gemini to extract job application details."""
+    """
+    Uses Gemini to extract job application details with advanced error handling and response validation.
+    
+    Args:
+        gemini_key: The Gemini API key
+        subject: Email subject line
+        body: Email body text
+        date_received: Date the email was received
+        
+    Returns:
+        Dictionary containing extracted job information or error details
+    """
     if not gemini_key:
-        return {"Status": "Error: Gemini API Key Missing"}
+        logging.error("Gemini API key missing for job info extraction")
+        return {"Status": "Error: Gemini API Key Missing", "Company Name": "Not Available", "Job Title": "Not Available"}
+    
     if not body and not subject:
+        logging.info("Both email subject and body are empty, skipping extraction")
         return None
 
-    truncated_body = body if body else ""
+    # Prepare email content, prioritizing meaningful content
+    email_content = body if body else ""
+    if len(email_content) > 12000:  # Truncate very long emails to stay within context limits
+        email_content = email_content[:12000] + "... [Content truncated due to length]"
 
-    # Use the same robust prompt as before
+    # Enhanced structured prompt with clear extraction guidelines
     prompt = f"""
         **Objective:** Analyze the provided email content (Subject and Body) related to a job application. Your goal is to accurately extract the Company Name, Job Title, and classify the email's status based on its primary purpose.
 
@@ -557,12 +612,12 @@ def extract_job_info_with_gemini(gemini_key, subject, body, date_received):
             * **Company Name:** Identify the primary company name directly mentioned or strongly implied in the email. If multiple are mentioned (e.g., a parent company and a subsidiary), choose the one most relevant to the application context (usually the sender or the one the job is with). If no company name can be reasonably identified, state "Not Mentioned".
             * **Job Title:** Identify the specific job title being discussed for the application. Include any clarifying details if present (e.g., "Software Engineer (L4)"). If no specific job title is mentioned, or if it refers only generally to "the position" or "your application" without naming the role, state "Not Mentioned".
             * **Status:** Classify the email's main purpose using **EXACTLY ONE** category from the list below. **Prioritize based on keywords and the most definitive action/decision conveyed.** The order below implies a general priority (e.g., a clear rejection overrides simple acknowledgment phrases):
-                * **Rejection**: Choose if keywords like "regret", "unfortunately", "not selected", "other candidates", "will not be moving forward", "position has been filled", "unable to offer you the position" are present and represent the core message.
+                * **Rejection**: Choose if keywords like "regret", "unfortunately", "not selected", "other candidates", "will not be moving forward", "position has been filled", "unable to offer you the position" are present and represent the core message. Sometimes even "thank you for applying" is a rejection.
                 * **Offer**: Choose if keywords like "offer", "employment offer", "job offer", "compensation", "salary", "benefits", "start date", "welcome aboard", "joining us", "extend an offer" are present and form the main purpose.
                 * **Interview Request**: Choose if keywords like "interview", "schedule time", "schedule a call", "speak with", "talk further", "next steps involve a call/meeting", "discussion with the team" clearly indicate a request to schedule or conduct an interview.
                 * **Assessment Request**: Choose if keywords like "assessment", "test", "coding challenge", "technical screen", "assignment", "Hackerrank", "Codility", "online assessment" indicate the next step is a test or skills evaluation.
                 * **Keep In Touch / Future Consideration**: Choose ONLY if the *primary message* is about keeping the application/resume on file for *future* roles, often in the absence of strong rejection keywords for the *current* role (e.g., "keep your resume on file", "consider you for future opportunities", "reach out if a suitable role opens"). If clear rejection language for the *current* role is present, choose 'Rejection' instead, even if future consideration is mentioned secondarily.
-                * **Application Acknowledgment**: Choose ONLY if the email *solely* confirms receipt of the application and indicates it's under review, without providing any further status update (e.g., "received your application", "thank you for applying", "application is under review", "will be in touch if"). If other status keywords are present, prioritize those categories.
+                * **Application Acknowledgment**: Choose ONLY if the email *solely* confirms receipt of the application and indicates it's under review, without providing any further status update (e.g., "received your application", "application is under review", "will be in touch if"). If other status keywords are present, prioritize those categories.
                 * **Informational / General Company Email**: Choose if the email is clearly a newsletter, marketing communication, company update, job alert notification (for *new* jobs, not a status update on an *existing* application), or other general communication not tied to the status of a specific, active application process.
                 * **Other**: Choose if the email's purpose related to the application process is clear but does not fit neatly into any of the above categories (e.g., a request for more information/documents *from* the applicant, notification of a delay in the process, system error message).
                 * **Unable to Determine**: Choose ONLY if the email content is extremely ambiguous, lacks sufficient context, or is corrupted/incomplete, making it impossible to confidently determine the company, title, or status.
@@ -572,50 +627,114 @@ def extract_job_info_with_gemini(gemini_key, subject, body, date_received):
             * Do **NOT** include any introductory phrases, explanations, confidence scores, or the reasoning process in the final output.
             * Use the following exact format, replacing bracketed placeholders with the extracted information:
 
-            ```text
-            Company Name: [Extracted Company Name or "Not Mentioned"]
-            Job Title: [Extracted Job Title or "Not Mentioned"]
-            Status: [Chosen Status Category]
+            ```json
+            {{
+                "Company Name": "[Extracted Company Name or 'Not Mentioned']",
+                "Job Title": "[Extracted Job Title or 'Not Mentioned']",
+                "Status": "[Chosen Status Category]",
+                "Reasoning": "[Brief explanation of why this status was chosen]"
+            }}
             ```
 
         --- Email Content ---
         Date Received: {date_received}
         Subject: {subject}
         Body:
-        {truncated_body}
+        {email_content}
         --- End Email Content ---
 
         Output:
     """
+    
     try:
+        # Configure Gemini API with proper error handling
         genai.configure(api_key=gemini_key)
-        # Ensure a valid model name is used
-        gemini_model = genai.GenerativeModel('gemini-2.0-flash') # Or 'gemini-pro'
+        
+        # Use the most appropriate model based on content length and complexity
+        model_name = 'gemini-2.0-flash'  # Default to faster model
+        if len(email_content) > 8000 or subject and "interview" in subject.lower():
+            model_name = 'gemini-2.0-pro'  # Use more capable model for complex or long content
+            
+        gemini_model = genai.GenerativeModel(model_name)
+        
+        # Request structured JSON response with low temperature for consistency
         response = gemini_model.generate_content(
             prompt,
-            generation_config=genai.types.GenerationConfig(temperature=0.1)
+            generation_config=genai.types.GenerationConfig(
+                temperature=0.1,
+                response_mime_type="application/json"
+            )
         )
-        extracted_data = {"Company Name": "Parsing Error", "Job Title": "Parsing Error", "Status": "Parsing Error"}
-        lines = response.text.strip().split('\n')
-        found_keys = set()
-        for line in lines:
-            if ':' in line:
-                 key, value = line.split(':', 1)
-                 key = key.strip(); value = value.strip()
-                 if key in extracted_data:
-                     extracted_data[key] = value
-                     found_keys.add(key)
-        if len(found_keys) != len(extracted_data):
-             extracted_data["Status"] = "LLM Format Error"
-        return extracted_data
+        
+        # Process the response with robust error handling
+        response_text = response.text.strip()
+        logging.debug(f"Raw Gemini response for job info: {response_text[:200]}...")  # Log beginning for debugging
+        
+        # Clean up response if it contains markdown code blocks
+        if response_text.startswith("```json"):
+            response_text = response_text[7:].strip()
+        if response_text.endswith("```"):
+            response_text = response_text[:-3].strip()
+            
+        # Try to parse as JSON first
+        try:
+            extracted_data = json.loads(response_text)
+            # Validate required fields
+            required_fields = ["Company Name", "Job Title", "Status"]
+            for field in required_fields:
+                if field not in extracted_data:
+                    extracted_data[field] = "Not Mentioned"
+            
+            # Ensure reasoning field exists
+            if "Reasoning" not in extracted_data:
+                extracted_data["Reasoning"] = "No reasoning provided"
+                
+            # Normalize status values for consistency
+            if extracted_data["Status"] in ["Unknown", "Unclear", "Not clear"]:
+                extracted_data["Status"] = "Unable to Determine"
+                
+            return extracted_data
+            
+        except json.JSONDecodeError:
+            # Fallback to line-by-line parsing if JSON parsing fails
+            extracted_data = {"Company Name": "Not Mentioned", "Job Title": "Not Mentioned", "Status": "Parsing Error", "Reasoning": "Failed to parse response"}
+            lines = response_text.split('\n')
+            
+            for line in lines:
+                if ':' in line:
+                    key, value = line.split(':', 1)
+                    key = key.strip()
+                    value = value.strip().strip('"').strip("'")
+                    if key in extracted_data:
+                        extracted_data[key] = value
+            
+            logging.warning(f"Failed to parse JSON response, used line-by-line fallback: {extracted_data}")
+            return extracted_data
+            
     except Exception as e:
-        print(f"Error calling Gemini API: {e}") # Log error server-side
-        # Provide a user-friendly error status
+        logging.error(f"Error calling Gemini API for job info extraction: {str(e)}", exc_info=True)
+        
+        # Provide detailed error status for better debugging and user feedback
         error_status = "LLM Error"
-        if "API key not valid" in str(e): error_status = "LLM Error: Invalid API Key"
-        elif "API_KEY_SERVICE_BLOCKED" in str(e): error_status = "LLM Error: API Blocked"
-        elif "RESOURCE_EXHAUSTED" in str(e): error_status = "LLM Error: Quota Exceeded"
-        return {"Company Name": "LLM Error", "Job Title": "LLM Error", "Status": error_status}
+        error_details = str(e).lower()
+        
+        if "api key not valid" in error_details or "invalid api key" in error_details:
+            error_status = "LLM Error: Invalid API Key"
+        elif "api_key_service_blocked" in error_details:
+            error_status = "LLM Error: API Blocked"
+        elif "resource_exhausted" in error_details or "quota exceeded" in error_details:
+            error_status = "LLM Error: Quota Exceeded"
+        elif "deadline exceeded" in error_details or "timeout" in error_details:
+            error_status = "LLM Error: Request Timeout"
+        elif "internal" in error_details:
+            error_status = "LLM Error: Service Unavailable"
+        
+        return {
+            "Company Name": "Not Available", 
+            "Job Title": "Not Available", 
+            "Status": error_status,
+            "Reasoning": f"Technical error: {str(e)[:100]}"
+        }
 
 # --- Flask Routes ---
 
@@ -832,12 +951,14 @@ def jobs():
          return render_template('jobs.html', recommended_jobs=[], general_jobs=[], user_info=session.get('user_info'), api_error=True)
 
     try:
-        page = int(request.args.get('page', 1))
+        recommended_page = int(request.args.get('page_recommended', 1))
+        general_page = int(request.args.get('page_general', 1))
     except ValueError:
-        page = 1
-    if page < 1: page = 1
+        recommended_page = 1
+        general_page = 1
+    if recommended_page < 1: recommended_page = 1
+    if general_page < 1: general_page = 1
     results_per_page = 6 # How many results to SHOW per page
-
 
     google_id = session['user_info']['google_id']
     user_profile = UserProfile.query.filter_by(google_id=google_id).first()
@@ -954,19 +1075,19 @@ def jobs():
         logging.info(f"Total recommended jobs fetched for pagination: {total_fetched_results}")
 
         if total_fetched_results > 0:
-            start_slice_index = (page - 1) * results_per_page
+            start_slice_index = (recommended_page - 1) * results_per_page
             end_slice_index = start_slice_index + results_per_page
             recommended_jobs_page = recommended_jobs_all[start_slice_index:end_slice_index] # Slice the list
 
             total_pages = math.ceil(total_fetched_results / results_per_page)
 
             recommended_pagination_info = {
-                "current_page": page,
+                "current_page": recommended_page,
                 "total_pages": total_pages,
-                "has_prev": page > 1,
-                "has_next": page < total_pages,
-                "prev_num": page - 1 if page > 1 else None,
-                "next_num": page + 1 if page < total_pages else None,
+                "has_prev": recommended_page > 1,
+                "has_next": recommended_page < total_pages,
+                "prev_num": recommended_page - 1 if recommended_page > 1 else None,
+                "next_num": recommended_page + 1 if recommended_page < total_pages else None,
                 "total_results": total_fetched_results # Add total count for info
             }
             logging.info(f"Pagination info (manual slicing): {recommended_pagination_info}")
@@ -991,19 +1112,19 @@ def jobs():
         logging.info(f"Total general jobs fetched for pagination: {total_fetched_results}")
 
         if total_fetched_results > 0:
-            start_slice_index = (page - 1) * results_per_page
+            start_slice_index = (general_page - 1) * results_per_page
             end_slice_index = start_slice_index + results_per_page
             general_jobs_page = general_jobs_all[start_slice_index:end_slice_index] # Slice the list
 
             total_pages = math.ceil(total_fetched_results / results_per_page)
 
             general_pagination_info = {
-                "current_page": page,
+                "current_page": general_page,
                 "total_pages": total_pages,
-                "has_prev": page > 1,
-                "has_next": page < total_pages,
-                "prev_num": page - 1 if page > 1 else None,
-                "next_num": page + 1 if page < total_pages else None,
+                "has_prev": general_page > 1,
+                "has_next": general_page < total_pages,
+                "prev_num": general_page - 1 if general_page > 1 else None,
+                "next_num": general_page + 1 if general_page < total_pages else None,
                 "total_results": total_fetched_results # Add total count for info
             }
             logging.info(f"Pagination info (manual slicing): {general_pagination_info}")
@@ -1064,6 +1185,9 @@ def process_emails():
     if 'user_info' not in session:
         flash("Please log in first.", "warning")
         return redirect(url_for('index'))
+    
+    user_google_id = session['user_info']['google_id'] # <<-- Get google_id
+
 
     # Get Gemini Key from form and store in session
     gemini_key = os.environ.get("GEMINI_API_KEY")
@@ -1093,8 +1217,18 @@ def process_emails():
     # Store job_id in Redis as well as a backup
     redis_client.set('current_job_id', job_id)
     
+    # Create a unique job ID and store it in Redis
+    job_id = str(uuid.uuid4())
+    session['job_id'] = job_id
+    session.modified = True
+    print(f"DEBUG: Set job_id in session: {job_id} for user {user_google_id}")
+
+    # Store job_id in Redis as well as a backup
+    redis_client.set(f'user:{user_google_id}:current_job_id', job_id, ex=3600) # Link job to user, add expiry
+
     # Store processing parameters in Redis
     redis_client.hset(f"{job_id}:params", mapping={
+        "user_google_id": user_google_id,
         'sheet_name': sheet_name,
         'max_emails': str(max_emails or 50),
         'included_statuses': json.dumps(included_statuses)
@@ -1264,14 +1398,17 @@ def start_processing():
     """Background route that actually processes the emails."""
     job_id = request.args.get('job_id')
     if not job_id:
-        job_id = session.get('job_id')
-        if not job_id:
+        # Attempt to find job_id based on logged-in user if possible (less reliable for background)
+        if 'user_info' in session and session['user_info'].get('google_id'):
+            user_google_id = session['user_info']['google_id']
             try:
-                job_id = redis_client.get('current_job_id')
-                if job_id:
-                    job_id = job_id.decode('utf-8')
-            except:
-                pass
+                job_id_bytes = redis_client.get(f'user:{user_google_id}:current_job_id')
+                if job_id_bytes:
+                    job_id = job_id_bytes.decode('utf-8')
+                    print(f"DEBUG start_processing: Found job_id {job_id} via user {user_google_id} from Redis.")
+            except Exception as e:
+                print(f"DEBUG start_processing: Error fetching job_id for user {user_google_id} from Redis: {e}")
+
     
     if not job_id:
         return jsonify({'status': 'error', 'message': 'No job ID found'})
@@ -1283,6 +1420,7 @@ def start_processing():
     
     # Get parameters from Redis
     params = redis_client.hgetall(f"{job_id}:params")
+    user_google_id = params.get(b'user_google_id') # <<--- GET google_id
     if not params:
         update_progress(job_id, 'error', 0, 0, error='No parameters found for job')
         return jsonify({'status': 'error', 'message': 'No parameters found for job'})
@@ -1421,6 +1559,8 @@ def start_processing():
             return jsonify({'status': 'error', 'message': error_msg})
         
         # 3. Process Each Email
+        emails_saved_count = 0 # Track emails saved to DB
+
         for i, message_info in enumerate(messages):
             if max_emails is not None and processed_count >= max_emails:
                 print(f"DEBUG: Reached processing limit of {max_emails}")
@@ -1439,32 +1579,83 @@ def start_processing():
                 subject = next((decode_email_part(h['value']) for h in headers if h['name'].lower() == 'subject'), 'No Subject')
                 sender = next((decode_email_part(h['value']) for h in headers if h['name'].lower() == 'from'), 'Unknown Sender')
                 date_str = next((h['value'] for h in headers if h['name'].lower() == 'date'), None)
-
+                date_received_obj = None
+                date_received_str = "Unknown Date" # Default for sheet/logging if parsing fails
                 if date_str:
-                    date_received = parsedate_to_datetime(date_str).strftime('%Y-%m-%d')
-                else:
-                    date_received = "Unknown Date"
+                    try:
+                        date_received_obj = parsedate_to_datetime(date_str)
+                        date_received_str = date_received_obj.strftime('%Y-%m-%d') # Format for sheet
+                    except Exception as date_err:
+                        logging.warning(f"Could not parse date string '{date_str}' for email {msg_id}: {date_err}")
+                        # date_received_obj remains None
 
                 body = get_email_body(payload)
-                print(f"DEBUG: Email subject: {subject}")
-                print(f"DEBUG: Email body length: {len(body) if body else 0}")
+                body_snippet_to_save = (body[:1000] + '...') if body and len(body) > 1000 else body
 
-                if not body and not subject: 
-                    print("DEBUG: Skipping email with no body and subject")
+                # <<< ADDED LOGGING >>>
+                logging.debug(f"Email {msg_id}: Subject='{subject}', DateStr='{date_received_str}'")
+
+                if not body and not subject:
+                    logging.debug(f"Skipping email {msg_id} with no body and subject")
                     continue
 
-                # Update progress with current email info
                 update_progress(job_id, 'analyzing', processed_count, len(messages), current_email=subject)
 
-                # Call Gemini
-                extracted_info = extract_job_info_with_gemini(GEMINI_API_KEY, subject, body, date_received)
-                print(f"DEBUG: Extracted info: {extracted_info}")
-                
-                if extracted_info:
+                extracted_info = extract_job_info_with_gemini(GEMINI_API_KEY, subject, body, date_received_str) # Pass formatted string
+
+                logging.debug(f"Email {msg_id}: Gemini Extracted Info = {extracted_info}")
+
+                if extracted_info and "Status" in extracted_info and "LLM Error" not in extracted_info.get("Status"):
                     status_val = extracted_info.get('Status', 'Unable to Determine')
-                    if status_val in included_statuses:
-                        record = {
-                            'Date Received': date_received,
+
+                    status_match = status_val in included_statuses
+                    logging.debug(f"Email {msg_id}: Status='{status_val}', IncludedStatuses={included_statuses}, Match={status_match}")
+
+                    if status_match:
+                        # --- Attempt to SAVE TO DATABASE ---
+                        try:
+                            logging.debug(f"Email {msg_id}: Checking DB for user {user_google_id}, message {msg_id}")
+
+                            existing_saved_email = SavedEmail.query.filter_by(
+                                user_google_id=user_google_id,
+                                gmail_message_id=msg_id
+                            ).first()
+
+                            if not existing_saved_email:
+                                logging.debug(f"Email {msg_id}: Attempting to save to DB.")
+                                new_saved_email = SavedEmail(
+                                    id=None,
+                                    user_google_id=user_google_id,
+                                    gmail_message_id=msg_id,
+                                    subject=subject,
+                                    sender=sender,
+                                    date_received=date_received_obj.date() if date_received_obj else None, # Save date object
+                                    body_snippet=body_snippet_to_save,
+                                    extracted_company=extracted_info.get('Company Name', 'Not Found'),
+                                    extracted_job_title=extracted_info.get('Job Title', 'Not Found'),
+                                    extracted_status=status_val
+                                )
+
+                                db.session.add(new_saved_email)
+                                db.session.commit()
+                                emails_saved_count += 1
+                                logging.info(f"Successfully saved email {msg_id} to database for user {user_google_id}.") # Changed to info
+                            else:
+                                logging.debug(f"Email {msg_id}: Already exists in database, skipping DB save.")
+
+                        except Exception as db_err:
+                            db.session.rollback()
+                            # <<< MODIFIED LOGGING >>>
+                            error_msg = f"DATABASE ERROR saving email {msg_id} for user {user_google_id}: {str(db_err)}"
+                            errors.append(error_msg)
+                            logging.error(error_msg, exc_info=True) # Log full traceback for DB errors
+                            redis_client.lpush(f"{job_id}:errors", error_msg)
+                            # Continue to next email even if DB save fails
+
+                        # --- Prepare data and add to Google Sheet ---
+                        # Correctly define the record *once* for the sheet
+                        sheet_record = {
+                            'Date Received': date_received_str, # Use formatted string
                             'Company Name': extracted_info.get('Company Name', 'Not Found'),
                             'Job Title': extracted_info.get('Job Title', 'Not Found'),
                             'Status': status_val,
@@ -1472,36 +1663,49 @@ def start_processing():
                             'Sender': sender,
                             'Email ID': msg_id
                         }
-                        
-                        # Store result in Redis for live updates
-                        result_key = f"{job_id}:result:{included_count}"
-                        redis_client.hset(result_key, mapping=record)
-                        included_count += 1
-                        redis_client.hset(job_id, 'included', str(included_count))
-                        
-                        # Update progress
+
+                        # Store result in Redis for live updates on /results page
+                        result_key = f"{job_id}:result:{included_count}" # included_count tracks items added to sheet/redis results
+                        try:
+                            # Ensure all values going into Redis are strings
+                            redis_record = {k: str(v) for k, v in sheet_record.items()}
+                            redis_client.hset(result_key, mapping=redis_record)
+                        except Exception as redis_err:
+                            logging.warning(f"Could not set Redis result key {result_key}: {redis_err}")
+
+                        included_count += 1 # Increment count for items matching criteria
+                        redis_client.hset(job_id, 'included', str(included_count)) # Update sheet/redis results count
+
                         update_progress(job_id, 'writing', processed_count, len(messages), included=included_count)
-                        
+
                         # Append to Google Sheet
                         headers_to_append = ['Date Received', 'Company Name', 'Job Title', 'Status', 'Email Subject', 'Sender', 'Email ID']
-                        row_to_append = [record[h] for h in headers_to_append]
+                        # Ensure order matches headers
+                        row_to_append = [sheet_record.get(h, '') for h in headers_to_append]
                         try:
                             worksheet.append_row(row_to_append, value_input_option='USER_ENTERED')
-                            print(f"DEBUG: Added row to sheet for {record['Company Name']}")
+                            logging.debug(f"Added row to sheet for email {msg_id}")
                         except Exception as sheet_err:
-                            error_msg = f"Error writing row for email {msg_id} to Sheet: {str(sheet_err)}"
+                            error_msg = f"SHEET ERROR writing row for email {msg_id}: {str(sheet_err)}"
                             errors.append(error_msg)
-                            print(f"DEBUG: {error_msg}")
+                            logging.error(error_msg, exc_info=True) # Log full traceback
                             redis_client.lpush(f"{job_id}:errors", error_msg)
+                    # End of 'if status_match:'
+                # End of 'if extracted_info:'
+                else:
+                    logging.warning(f"Email {msg_id}: Skipping save/sheet add due to missing/invalid Gemini data: {extracted_info}")
+
 
                 time.sleep(1.1) # Rate limit Gemini calls
 
             except Exception as e:
-                error_msg = f"Error processing email {msg_id}: {str(e)}"
+                error_msg = f"PROCESSING ERROR for email {msg_id}: {str(e)}"
                 errors.append(error_msg)
-                print(f"DEBUG: {error_msg}")
+                logging.error(error_msg, exc_info=True) # Log full traceback
                 redis_client.lpush(f"{job_id}:errors", error_msg)
-                continue
+                # Update progress even if one email fails catastrophically
+                update_progress(job_id, 'error_processing', processed_count, len(messages), error=f"Error on email {msg_id}")
+                continue # Move to the next email
 
     except Exception as e:
         error_msg = f"Major error during processing: {str(e)}"
@@ -1519,13 +1723,16 @@ def start_processing():
     redis_client.hset(job_id, 'included_count', str(included_count))
     
     # Final update to 'complete' status
-    update_progress(job_id, 'complete', processed_count, len(messages) if 'messages' in locals() else 0)
+    update_progress(job_id, 'complete', processed_count, len(messages) if 'messages' in locals() else 0, included=included_count) # included_count is still relevant for sheet
     
+    redis_client.hset(job_id, 'emails_saved_db', str(emails_saved_count))
+
     return jsonify({
         'status': 'complete',
         'processed_count': processed_count,
         'included_count': included_count,
-        'sheet_url': sheet_url
+        'sheet_url': sheet_url,
+        'emails_saved_db': emails_saved_count
     })
 
 @app.route('/results')
@@ -1567,6 +1774,110 @@ def results():
                           job_id=job_id,
                           processing_started=processing_started)
 
+@app.route('/saved_emails')
+def saved_emails():
+    """Displays the list of emails saved by the user."""
+    if 'user_info' not in session or not session['user_info'].get('google_id'):
+        flash("Please log in to view your saved emails.", "warning")
+        return redirect(url_for('login'))
+
+    google_id = session['user_info']['google_id']
+
+    try:
+        user_saved_emails = SavedEmail.query.filter_by(user_google_id=str(google_id).encode())\
+                                      .order_by(SavedEmail.saved_at.desc())\
+                                      .all()
+
+    except Exception as e:
+        logging.error(f"Error fetching saved emails for user {google_id}: {e}", exc_info=True)
+        flash("An error occurred while retrieving your saved emails.", "danger")
+        user_saved_emails = []
+    print(f"DEBUG: User {google_id} has {len(user_saved_emails)} saved emails.")
+
+    return render_template('saved_emails.html',
+                           saved_emails=user_saved_emails,
+                           user_info=session.get('user_info'))
+
+@app.route('/remove_email/<int:email_db_id>', methods=['POST'])
+def remove_email(email_db_id):
+    """Removes a saved email."""
+    if 'user_info' not in session or not session['user_info'].get('google_id'):
+        # Handle AJAX vs Form submit response
+        is_ajax = request.headers.get('X-Requested-With') == 'XMLHttpRequest'
+        if is_ajax:
+            return jsonify({'status': 'error', 'message': 'Authentication required.'}), 401
+        else:
+            flash("Authentication required.", "warning")
+            return redirect(url_for('login'))
+
+
+    google_id = session['user_info']['google_id']
+    is_ajax = request.headers.get('X-Requested-With') == 'XMLHttpRequest' # Check again inside
+
+    try:
+        email_to_remove = SavedEmail.query.filter_by(id=email_db_id, user_google_id=google_id).first()
+
+        if not email_to_remove:
+            if is_ajax:
+                 return jsonify({'status': 'error', 'message': 'Email not found or permission denied.'}), 404
+            else:
+                 flash("Email not found or permission denied.", "warning")
+                 return redirect(url_for('saved_emails'))
+
+
+        db.session.delete(email_to_remove)
+        db.session.commit()
+        logging.info(f"User {google_id} removed saved email DB ID: {email_db_id}")
+
+        if is_ajax:
+            return jsonify({'status': 'success', 'message': 'Email removed successfully!'}), 200
+        else:
+            flash("Email removed successfully!", "success")
+            return redirect(url_for('saved_emails'))
+
+    except Exception as e:
+        db.session.rollback()
+        logging.error(f"Error removing email DB ID {email_db_id} for user {google_id}: {e}", exc_info=True)
+        if is_ajax:
+             return jsonify({'status': 'error', 'message': f'Database error: {str(e)}'}), 500
+        else:
+             flash(f"An error occurred while removing the email: {e}", "danger")
+             return redirect(url_for('saved_emails'))
+        
+@app.route('/delete_email/<email_id>', methods=['DELETE'])
+def delete_email(email_id):
+    if 'user_info' not in session or not session['user_info'].get('google_id'):
+        return jsonify({'success': False, 'message': 'Authentication required.'}), 401
+
+    try:
+        # Get the saved email from database
+        saved_email = SavedEmail.query.filter_by(id=email_id).first()
+        if not saved_email:
+            return jsonify({'success': False, 'message': 'Email not found'}), 404
+
+        # Get Gmail service
+        gmail_service = build_google_service('gmail', 'v1')
+        if not gmail_service:
+            return jsonify({'success': False, 'message': 'Failed to initialize Gmail service'}), 500
+
+        # Delete from Gmail
+        try:
+            gmail_service.users().messages().trash(userId='me', id=saved_email.gmail_message_id).execute()
+        except Exception as gmail_err:
+            logging.error(f"Error deleting email from Gmail: {gmail_err}")
+            # Continue with database deletion even if Gmail deletion fails
+            # This ensures the email is at least removed from our database
+
+        # Delete from database
+        db.session.delete(saved_email)
+        db.session.commit()
+        
+        return jsonify({'success': True})
+    except Exception as e:
+        db.session.rollback()
+        logging.error(f"Error deleting email: {e}")
+        return jsonify({'success': False, 'message': str(e)}), 500
+
 # --- Run the App ---
 if __name__ == '__main__':
     # Make sure necessary environment variables are set
@@ -1575,6 +1886,6 @@ if __name__ == '__main__':
     else:
         # This is important for OAuth state handling in some environments
         os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1' # Allow HTTP for local testing ONLY
-        app.run(debug=True) # Run in debug mode for development
+        app.run() # Run in debug mode for development
         # For production, use a proper WSGI server like Gunicorn or Waitress
         # And set debug=False, SESSION_COOKIE_SECURE=True (if using HTTPS)

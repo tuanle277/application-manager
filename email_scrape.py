@@ -34,7 +34,7 @@ GOOGLE_SHEET_NAME = 'job_application_tracker'
 # Keywords to initially filter emails (adjust as needed)
 EMAIL_SEARCH_QUERY = '(SUBJECT "application") OR (SUBJECT "interview") OR (SUBJECT "offer") OR (SUBJECT "rejection") OR (SUBJECT "assessment") OR (SUBJECT "keep in touch") OR (SUBJECT "thank you") OR (SUBJECT "thank you for applying") OR (SUBJECT "position") OR (SUBJECT "regret") OR (SUBJECT "unfortunately")'
 # Maximum emails to process (set to None to process all matches, use a small number for testing)
-MAX_EMAILS_TO_PROCESS = 50
+MAX_EMAILS_TO_PROCESS = 1000
 # Gemini Model Name
 GEMINI_MODEL = 'gemini-2.0-flash' # Or another suitable model
 # IMAP Configuration
@@ -140,39 +140,49 @@ def extract_job_info_with_gemini(subject, body, date_received):
     truncated_body = body if body else ""
 
     prompt = f"""
-    Analyze the following email content (Subject and Body) which is likely related to a job application.
-    Extract the following information:
-    1. Company Name: The name of the company the email is from or concerning.
-    2. Job Title: The specific job title mentioned in the email, if any. If not mentioned, state "Not Mentioned".
-    3. Status: Classify the email's primary purpose, read the email carefully, if you see something like 
-    "we regret to inform you that..." or 
-    "we have decided to move forward with other candidates"
-    , then the status is a Rejection. Choose ONE from:
-        - Rejection
-        - Offer
-        - Interview Request
-        - Application Acknowledgment
-        - Assessment Request
-        - Keep In Touch / Future Consideration
-        - Informational / General Company Email
-        - Other (Specify briefly if possible, otherwise just "Other")
-        - Unable to Determine
+        **Objective:** Analyze the provided email content (Subject and Body) related to a job application. Your goal is to accurately extract the Company Name, Job Title, and classify the email's status based on its primary purpose.
 
-    Explain your reasoning in the output. But do not explain the reasoning for the status or put in the spreadsheet.
-    Provide the output ONLY in the following format, with each field on a new line:
-    Company Name: [Extracted Company Name]
-    Job Title: [Extracted Job Title or "Not Mentioned"]
-    Status: [Chosen Status]
+        **Instructions:**
 
-    --- Email Content ---
-    Date Received: {date_received}
-    Subject: {subject}
+        1.  **Read Thoroughly:** Carefully examine the *entire* provided email content, including the Subject line and the full Body text. Pay attention to keywords, phrases, and the overall context. Explain your thought process to yourself and argue with yourself, give an explaination on why you chose the status.
+        2.  **Reason Step-by-Step (Internal Thought Process):**
+            * First, look for explicit mentions of a company name. Prioritize the company sending the email or the company the application is clearly directed towards.
+            * Second, scan for mentions of a specific job title related to the application.
+            * Third, analyze the email's core message to determine its status. Look for specific keywords associated with each status category. If multiple keywords/themes are present (e.g., rejection *and* keep-in-touch language), apply the prioritization logic defined in the Status Categories section below.
+        3.  **Extract Information:**
+            * **Company Name:** Identify the primary company name directly mentioned or strongly implied in the email. If multiple are mentioned (e.g., a parent company and a subsidiary), choose the one most relevant to the application context (usually the sender or the one the job is with). If no company name can be reasonably identified, state "Not Mentioned".
+            * **Job Title:** Identify the specific job title being discussed for the application. Include any clarifying details if present (e.g., "Software Engineer (L4)"). If no specific job title is mentioned, or if it refers only generally to "the position" or "your application" without naming the role, state "Not Mentioned".
+            * **Status:** Classify the email's main purpose using **EXACTLY ONE** category from the list below. **Prioritize based on keywords and the most definitive action/decision conveyed.** The order below implies a general priority (e.g., a clear rejection overrides simple acknowledgment phrases):
+                * **Rejection**: Choose if keywords like "regret", "unfortunately", "not selected", "other candidates", "will not be moving forward", "position has been filled", "unable to offer you the position" are present and represent the core message.
+                * **Offer**: Choose if keywords like "offer", "employment offer", "job offer", "compensation", "salary", "benefits", "start date", "welcome aboard", "joining us", "extend an offer" are present and form the main purpose.
+                * **Interview Request**: Choose if keywords like "interview", "schedule time", "schedule a call", "speak with", "talk further", "next steps involve a call/meeting", "discussion with the team" clearly indicate a request to schedule or conduct an interview.
+                * **Assessment Request**: Choose if keywords like "assessment", "test", "coding challenge", "technical screen", "assignment", "Hackerrank", "Codility", "online assessment" indicate the next step is a test or skills evaluation.
+                * **Keep In Touch / Future Consideration**: Choose ONLY if the *primary message* is about keeping the application/resume on file for *future* roles, often in the absence of strong rejection keywords for the *current* role (e.g., "keep your resume on file", "consider you for future opportunities", "reach out if a suitable role opens"). If clear rejection language for the *current* role is present, choose 'Rejection' instead, even if future consideration is mentioned secondarily.
+                * **Application Acknowledgment**: Choose ONLY if the email *solely* confirms receipt of the application and indicates it's under review, without providing any further status update (e.g., "received your application", "thank you for applying", "application is under review", "will be in touch if"). If other status keywords are present, prioritize those categories.
+                * **Informational / General Company Email**: Choose if the email is clearly a newsletter, marketing communication, company update, job alert notification (for *new* jobs, not a status update on an *existing* application), or other general communication not tied to the status of a specific, active application process.
+                * **Other**: Choose if the email's purpose related to the application process is clear but does not fit neatly into any of the above categories (e.g., a request for more information/documents *from* the applicant, notification of a delay in the process, system error message).
+                * **Unable to Determine**: Choose ONLY if the email content is extremely ambiguous, lacks sufficient context, or is corrupted/incomplete, making it impossible to confidently determine the company, title, or status.
 
-    Body:
-    {truncated_body}
-    --- End Email Content ---
+        4.  **Output Format:**
+            * Produce **ONLY** the requested information.
+            * Do **NOT** include any introductory phrases, explanations, confidence scores, or the reasoning process in the final output.
+            * Use the following exact format, replacing bracketed placeholders with the extracted information:
 
-    Output:
+            ```text
+            Company Name: [Extracted Company Name or "Not Mentioned"]
+            Job Title: [Extracted Job Title or "Not Mentioned"]
+            Status: [Chosen Status Category]
+            Reasoning: [Your internal reasoning process]
+            ```
+
+        --- Email Content ---
+        Date Received: {date_received}
+        Subject: {subject}
+        Body:
+        {truncated_body}
+        --- End Email Content ---
+
+        Output:
     """
 
     # Add safety settings if desired (optional)
@@ -189,7 +199,7 @@ def extract_job_info_with_gemini(subject, body, date_received):
             # safety_settings=safety_settings # Uncomment to enable
             )
         # Basic parsing - assumes the LLM follows the format strictly
-        extracted_data = {"Company Name": "Error", "Job Title": "Error", "Status": "Error"}
+        extracted_data = {"Company Name": "Error", "Job Title": "Error", "Status": "Error", "Reasoning": "Error"}
         lines = response.text.strip().split('\n')
         for line in lines:
             if ':' in line:
@@ -205,7 +215,7 @@ def extract_job_info_with_gemini(subject, body, date_received):
         # Check for specific errors like blocked prompts
         if hasattr(e, 'response') and e.response.prompt_feedback.block_reason:
              console.print(f"[bold red]Prompt blocked:[/bold red] {e.response.prompt_feedback.block_reason}")
-        return {"Company Name": "LLM Error", "Job Title": "LLM Error", "Status": "LLM Error"}
+        return {"Company Name": "LLM Error", "Job Title": "LLM Error", "Status": "LLM Error", "Reasoning": "LLM Error"}
 
 # --- Google Sheets Functions ---
 def initialize_google_sheet():
@@ -215,15 +225,13 @@ def initialize_google_sheet():
         try:
             sheet = gc.open(GOOGLE_SHEET_NAME)
             console.print(f"[green]Using existing Google Sheet:[/green] {GOOGLE_SHEET_NAME}")
-            sheet.share('mtuan.le2024@gmail.com', perm_type='user', role='writer')
 
         except gspread.exceptions.SpreadsheetNotFound:
             # Create new sheet if it doesn't exist
             sheet = gc.create(GOOGLE_SHEET_NAME)
             console.print(f"[green]Created new Google Sheet:[/green] {GOOGLE_SHEET_NAME}")
-            
-            # Share with your account (optional)
-        console.print(f"[green]Shared with mtuan.le2024@gmail.com[/green]")
+            sheet.share('mtuan.le2024@gmail.com', perm_type='user', role='writer')
+            console.print(f"[green]Shared with mtuan.le2024@gmail.com[/green]")
             
         # Get or create the first worksheet
         try:
@@ -233,7 +241,7 @@ def initialize_google_sheet():
 
         # Set headers if sheet is empty
         if worksheet.row_count <= 1:
-            headers = ['Date Received', 'Company Name', 'Job Title', 'Status', 'Email Subject', 'Sender', 'Email ID']
+            headers = ['Date Received', 'Company Name', 'Job Title', 'Status', 'Reasoning', 'Email Subject', 'Sender', 'Email ID']
             worksheet.append_row(headers)
             
         # After creating the sheet, add:
@@ -254,6 +262,7 @@ def append_to_google_sheet(worksheet, record):
             record['Company Name'],
             record['Job Title'],
             record['Status'],
+            record['Reasoning'],
             record['Email Subject'],
             record['Sender'],
             record['Email ID']
@@ -332,7 +341,7 @@ def main():
         results_table.add_column("Company", style="green")
         results_table.add_column("Job Title", style="blue")
         results_table.add_column("Status", style="magenta")
-        
+        results_table.add_column("Reasoning", style="yellow")
         # Process emails with progress bar
         email_ids_to_process = list(reversed(email_ids))
         # Fix: Remove the min() calculation that might be causing the error
@@ -399,6 +408,7 @@ def main():
                                 'Company Name': extracted_info.get('Company Name', 'Not Found'),
                                 'Job Title': extracted_info.get('Job Title', 'Not Found'),
                                 'Status': status,
+                                'Reasoning': extracted_info.get('Reasoning', 'Not Found'),
                                 'Email Subject': subject,
                                 'Sender': sender,
                                 'Email ID': email_id.decode()
@@ -435,7 +445,7 @@ def main():
         mail.logout()
         
         console.print(f"[bold green]✓[/bold green] Data exported to Google Sheet: [cyan]{GOOGLE_SHEET_NAME}[/cyan]")
-            
+
     except Exception as e:
         console.print(f"[bold red]An unexpected error occurred in main execution:[/bold red] {e}")
         if mail:

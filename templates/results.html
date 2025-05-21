@@ -456,7 +456,8 @@
               <div
                 class="progress-value"
                 id="includedProgress"
-                style="width: {{ '{:.1f}%'.format((included_count / processed_count * 100) if processed_count > 0 else 0) }}"
+                data-width="{{ '{:.1f}'.format((included_count / processed_count * 100) if processed_count > 0 else 0) }}"
+                style="width: 0%"
               ></div>
             </div>
           </div>
@@ -638,6 +639,12 @@
 
         // Start polling for progress updates
         startProgressPolling();
+
+        // Set initial progress bar width
+        const includedProgress = document.getElementById("includedProgress");
+        if (includedProgress) {
+          includedProgress.style.width = includedProgress.dataset.width + "%";
+        }
       });
 
       function updateProgressUI(data) {
