@@ -611,6 +611,7 @@
         <a
           href="{{ url_for('index') }}"
           class="btn inline-flex items-center bg-gradient-to-r from-gray-500 to-gray-600 hover:from-gray-600 hover:to-gray-700 text-white font-bold py-3 px-6"
+          onclick="stopProcessing(event)"
         >
           <i class="fas fa-arrow-left mr-2"></i> Back to Home
         </a>
@@ -829,8 +830,12 @@
             console.log("Progress update:", data);
             updateProgressUI(data);
 
-            // Continue polling if not complete
-            if (data.status !== "complete" && data.status !== "error") {
+            // Continue polling if not complete, error, or stopped
+            if (
+              data.status !== "complete" &&
+              data.status !== "error" &&
+              data.status !== "stopped"
+            ) {
               setTimeout(startProgressPolling, 2000); // Poll every 2 seconds
             } else if (data.status === "error") {
               // Show error message
@@ -848,6 +853,13 @@
                 li.textContent = data.error;
                 errorsList.appendChild(li);
               }
+            } else if (data.status === "stopped") {
+              // Show stopped message
+              document.getElementById("headerStatus").textContent =
+                "Processing stopped by user";
+              document.getElementById("processingCard").style.display = "none";
+              document.getElementById("summaryCard").style.display = "block";
+              document.getElementById("resultsCard").style.display = "block";
             }
           })
           .catch((error) => {
@@ -1008,6 +1020,47 @@
           default:
             return "text-gray-600";
         }
+      }
+
+      // Add function to stop processing
+      function stopProcessing(event) {
+        event.preventDefault(); // Prevent default navigation
+
+        // Show confirmation dialog
+        if (
+          !confirm(
+            "Are you sure you want to stop processing and return to home?"
+          )
+        ) {
+          return;
+        }
+
+        // Call the stop_processing endpoint
+        fetch("/stop_processing", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            job_id: jobId,
+          }),
+        })
+          .then((response) => response.json())
+          .then((data) => {
+            if (data.success) {
+              // Navigate to home page
+              window.location.href = "{{ url_for('index') }}";
+            } else {
+              alert(
+                "Failed to stop processing: " +
+                  (data.message || "Unknown error")
+              );
+            }
+          })
+          .catch((error) => {
+            console.error("Error stopping processing:", error);
+            alert("Error stopping processing. Please try again.");
+          });
       }
     </script>
   </body>

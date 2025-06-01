@@ -1,218 +1,178 @@
 {% extends "base.html" %} {% block title %}Job Email Analyzer - Home{% endblock
-%} {% block head %} {# Add any specific CSS or meta tags for the index page here
-if needed #}
+%} {% block head %}
 <style>
-  /* Styles specific to index.html, if any */
   .card {
-    transition: transform 0.3s ease, box-shadow 0.3s ease;
+    transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+    border: 1px solid rgba(0, 0, 0, 0.1);
   }
   .card:hover {
-    transform: translateY(-5px);
-    box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1);
+    transform: translateY(-8px);
+    box-shadow: 0 20px 40px rgba(0, 0, 0, 0.12);
   }
   .btn {
     transition: all 0.3s ease;
     position: relative;
     overflow: hidden;
+    background: #2563eb;
+    color: white;
+    border: none;
+    padding: 12px 24px;
+    border-radius: 8px;
+    font-weight: 600;
+    cursor: pointer;
   }
-  .btn:after {
-    content: "";
-    position: absolute;
-    top: 50%;
-    left: 50%;
-    width: 5px;
-    height: 5px;
-    background: rgba(255, 255, 255, 0.5);
-    opacity: 0;
-    border-radius: 100%;
-    transform: scale(1, 1) translate(-50%);
-    transform-origin: 50% 50%;
+  .btn:hover {
+    background: #1d4ed8;
+    transform: translateY(-2px);
   }
-  .btn:hover:after {
-    animation: ripple 1s ease-out;
-  }
-  @keyframes ripple {
-    0% {
-      transform: scale(0, 0);
-      opacity: 0.5;
-    }
-    100% {
-      transform: scale(20, 20);
-      opacity: 0;
-    }
+  .btn:active {
+    transform: translateY(0);
   }
   .form-input {
-    transition: border-color 0.3s ease, box-shadow 0.3s ease;
+    transition: all 0.3s ease;
+    border: 2px solid #e5e7eb;
+    border-radius: 8px;
+    padding: 12px 16px;
+    width: 100%;
   }
   .form-input:focus {
-    border-color: #3b82f6;
-    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.2);
+    border-color: #2563eb;
+    box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.1);
+    outline: none;
   }
-  /* Remove loading overlay styles as they are not used here anymore */
+  .input-group {
+    position: relative;
+    margin-bottom: 1.5rem;
+  }
+  .input-icon {
+    position: absolute;
+    left: 12px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: #6b7280;
+  }
+  .input-with-icon {
+    padding-left: 40px;
+  }
+  .animate-fade-in {
+    animation: fadeIn 0.5s ease-out forwards;
+  }
+  @keyframes fadeIn {
+    from {
+      opacity: 0;
+      transform: translateY(10px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
 </style>
-{% endblock %} {% block content %} {# The main content of the index page goes
-here #} {# Note: Flash messages are now handled in base.html #}
-
-<header class="text-center mb-10">
-  <h1
-    class="text-4xl md:text-5xl font-bold mb-3 bg-clip-text text-transparent bg-gradient-to-r from-blue-600 to-indigo-600"
-  >
+{% endblock %} {% block content %}
+<!-- <header class="text-center mb-12 animate-fade-in">
+  <h1 class="text-4xl md:text-5xl font-bold mb-4 text-blue-600">
     Job Application Email Analyzer
   </h1>
   <p class="text-gray-600 text-lg">
     Scan your Gmail, analyze with AI, and log job statuses to Google Sheets.
   </p>
-</header>
+</header> -->
 
-{# Login/Logout Status Card #}
-<div class="card bg-white p-8 rounded-xl shadow-lg mb-8 text-center">
-  {% if user_info %}
-  <div class="flex items-center justify-center mb-4">
-    {# Display user picture from base template if needed, or keep simple icon #}
-    <div
-      class="w-12 h-12 bg-blue-100 rounded-full flex items-center justify-center mr-3"
-    >
-      <i class="fas fa-user text-blue-600 text-xl"></i>
-    </div>
-    <div class="text-left">
-      <p class="text-sm text-gray-500">Logged in as:</p>
-      <p class="font-semibold text-blue-600">
-        {{ user_info.get('email', 'Unknown User') }}
-      </p>
-    </div>
-  </div>
-  {# Logout button is now in the navbar from base.html #} {# You could add other
-  user-specific info here if desired #}
-  <!-- <p class="text-gray-600 text-sm">
-    Use the navigation above to view your profile or log out.
-  </p> -->
-
-  {% else %} {# Login Prompt #}
-  <div class="mb-6">
-    <div
-      class="w-20 h-20 mx-auto bg-blue-100 rounded-full flex items-center justify-center mb-4"
-    >
-      <i class="fas fa-lock text-blue-600 text-3xl"></i>
-    </div>
-    <p class="text-lg mb-4">
+{% if not user_info %}
+<div class="card bg-white p-8 rounded-xl mb-8 text-center animate-fade-in">
+  <div class="mb-8">
+    <p class="text-xl mb-6 text-gray-700">
       Please log in with your Google Account to get started.
     </p>
+    <a href="{{ url_for('login') }}" class="btn inline-flex items-center">
+      <i class="fab fa-google mr-3"></i> Sign in with Google
+    </a>
   </div>
-  <a
-    href="{{ url_for('login') }}"
-    class="btn inline-flex items-center bg-gradient-to-r from-blue-500 to-blue-600 text-white font-medium py-3 px-6 rounded-lg hover:from-blue-600 hover:to-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-50"
-  >
-    <i class="fab fa-google mr-2"></i> Sign in with Google
-  </a>
-  {% endif %}
 </div>
-
-{# Analysis Form Card (Only show if logged in) #} {% if user_info %}
-<div class="card bg-white p-8 rounded-xl shadow-lg">
-  <h2
-    class="text-2xl font-bold mb-6 text-center text-gray-800 flex items-center justify-center"
-  >
-    <i class="fas fa-magic text-indigo-500 mr-2"></i> Start Analysis
-  </h2>
+{% endif %} {% if user_info %}
+<div class="card bg-white p-8 rounded-xl animate-fade-in">
   <form
     action="{{ url_for('process_emails') }}"
     method="POST"
-    class="space-y-6"
+    class="space-y-8"
     id="emailProcessForm"
   >
-    {# Google Sheet Name Input #}
-    <div class="relative">
+    <div class="input-group">
       <label
         for="sheet_name"
         class="block text-sm font-medium text-gray-700 mb-2"
-        >Google Sheet Name</label
       >
+        Google Sheet Name
+      </label>
       <div class="relative">
-        <div
-          class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none"
-        >
-          <i class="fas fa-file-spreadsheet text-gray-400"></i>
-        </div>
+        <i class="fas fa-file-spreadsheet input-icon"></i>
         <input
           type="text"
           id="sheet_name"
           name="sheet_name"
-          class="form-input w-full pl-10 pr-3 py-3 border border-gray-300 rounded-lg shadow-sm focus:outline-none"
+          class="form-input input-with-icon"
           value="Job Application Tracker"
         />
       </div>
       <p class="text-sm text-gray-500 mt-2">
         The sheet will be created in your Google Drive if it doesn't exist.
       </p>
-      <p class="text-sm text-green-600 mt-1 flex items-center">
-        <i class="fas fa-check-circle mr-1"></i> The sheet will appear in your
+      <p class="text-sm text-green-600 mt-2 flex items-center">
+        <i class="fas fa-check-circle mr-2"></i> The sheet will appear in your
         Google Drive.
       </p>
     </div>
 
-    {# Max Emails Input #}
-    <div class="relative">
+    <div class="input-group">
       <label
         for="max_emails"
         class="block text-sm font-medium text-gray-700 mb-2"
-        >Max Emails to Process</label
       >
+        Max Emails to Process
+      </label>
       <div class="relative">
-        <div
-          class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none"
-        >
-          <i class="fas fa-envelope text-gray-400"></i>
-        </div>
+        <i class="fas fa-envelope input-icon"></i>
         <input
           type="number"
           id="max_emails"
           name="max_emails"
-          class="form-input w-full pl-10 pr-3 py-3 border border-gray-300 rounded-lg shadow-sm focus:outline-none"
+          class="form-input input-with-icon"
           value="50"
           min="1"
         />
-        {# Changed min to 1 #}
       </div>
       <p class="text-sm text-gray-500 mt-2 flex items-center">
-        <i class="fas fa-info-circle mr-1 text-blue-500"></i> Limits the number
-        of recent matching emails analyzed.
+        <i class="fas fa-info-circle mr-2 text-blue-500"></i>
+        Limits the number of recent matching emails analyzed.
       </p>
     </div>
 
-    {# Search Days Input #}
-    <div class="relative">
+    <div class="input-group">
       <label
         for="search_days"
         class="block text-sm font-medium text-gray-700 mb-2"
-        >Search Emails from Last (Days)</label
       >
+        Search Emails from Last (Days)
+      </label>
       <div class="relative">
-        <div
-          class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none"
-        >
-          <i class="fas fa-calendar-alt text-gray-400"></i>
-        </div>
+        <i class="fas fa-calendar-alt input-icon"></i>
         <input
           type="number"
           id="search_days"
           name="search_days"
-          class="form-input w-full pl-10 pr-3 py-3 border border-gray-300 rounded-lg shadow-sm focus:outline-none"
+          class="form-input input-with-icon"
           value="90"
           min="1"
         />
       </div>
       <p class="text-sm text-gray-500 mt-2 flex items-center">
-        <i class="fas fa-info-circle mr-1 text-blue-500"></i> How far back to
-        search for relevant emails.
+        <i class="fas fa-info-circle mr-2 text-blue-500"></i>
+        How far back to search for relevant emails.
       </p>
     </div>
 
-    {# Submit Button #}
-    <div class="text-center pt-4">
-      <button
-        type="submit"
-        class="btn w-full md:w-auto bg-gradient-to-r from-green-500 to-emerald-600 text-white font-bold py-3 px-8 rounded-lg hover:from-green-600 hover:to-emerald-700 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-opacity-50"
-      >
+    <div class="text-center pt-6">
+      <button type="submit" class="btn w-full md:w-auto">
         <i class="fas fa-cogs mr-2"></i> Start Processing Emails
       </button>
     </div>
@@ -220,30 +180,37 @@ here #} {# Note: Flash messages are now handled in base.html #}
 </div>
 {% endif %} {% endblock %} {% block scripts %}
 <script>
-  // Add any JavaScript specific to the index page here
   document.addEventListener("DOMContentLoaded", function () {
-    // Fade in elements (optional, could be in base.html if desired for all pages)
-    document.querySelectorAll(".card, header").forEach((el) => {
+    // Animate elements on load
+    document.querySelectorAll(".animate-fade-in").forEach((el, index) => {
       el.style.opacity = "0";
-      el.style.transition = "opacity 0.5s ease";
       setTimeout(() => {
         el.style.opacity = "1";
-      }, 100);
+      }, 100 * index);
     });
 
-    // Add focus effects to inputs
+    // Enhanced input interactions
     document.querySelectorAll(".form-input").forEach((input) => {
       input.addEventListener("focus", function () {
-        // Simple focus ring using Tailwind utilities on the input itself
-        this.classList.add("ring-2", "ring-blue-300", "border-transparent");
+        this.parentElement.classList.add("ring-2", "ring-blue-200");
       });
+
       input.addEventListener("blur", function () {
-        this.classList.remove("ring-2", "ring-blue-300", "border-transparent");
+        this.parentElement.classList.remove("ring-2", "ring-blue-200");
       });
     });
 
-    // No longer need the loading overlay logic here, it's handled by redirecting
-    // to the results page which shows progress.
+    // Form validation
+    const form = document.getElementById("emailProcessForm");
+    form.addEventListener("submit", function (e) {
+      const maxEmails = document.getElementById("max_emails").value;
+      const searchDays = document.getElementById("search_days").value;
+
+      if (maxEmails < 1 || searchDays < 1) {
+        e.preventDefault();
+        alert("Please enter valid numbers greater than 0");
+      }
+    });
   });
 </script>
 {% endblock %}

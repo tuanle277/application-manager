@@ -1,7 +1,8 @@
 import os
 import json
 import flask
-from flask import Flask, redirect, request, session, url_for, render_template, flash, jsonify
+from flask import Flask, redirect, request, session, url_for, render_template, flash, jsonify, send_file
+from flask_cors import CORS  # Add this import
 import google.generativeai as genai
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
@@ -27,6 +28,9 @@ import redis
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import inspect, Text
 dotenv.load_dotenv()
+
+# Allow OAuth 2.0 to work in development mode
+os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
 
 # Initialize Redis connection (make sure this is defined)
 REDIS_URL = os.environ.get("REDIS_URL")
@@ -68,8 +72,20 @@ ALLOWED_EXTENSIONS = {'txt', 'pdf', 'doc', 'docx'}
 
 # --- Flask App Setup ---
 app = Flask(__name__) # Create Flask app instance first
-app.secret_key = SECRET_KEY
-app.config['SESSION_COOKIE_SECURE'] = os.environ.get('SESSION_COOKIE_SECURE', 'False').lower() == 'true' # Control via env var
+CORS(app)  # Enable CORS for all routes
+app.secret_key = os.getenv('FLASK_SECRET_KEY', 'your-secret-key-here')
+app.config['SESSION_COOKIE_SECURE'] = os.environ.get('SESSION_COOKIE_SECURE', 'False').lower() == 'true'
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['PERMANENT_SESSION_LIFETIME'] = 3600  # 1 hour
+app.config['SESSION_REFRESH_EACH_REQUEST'] = True
+
+# Add session check middleware
+@app.before_request
+def before_request():
+    if 'user_info' in session:
+        # Refresh session on each request if user is logged in
+        session.modified = True
 
 # --- IMPORTANT: Ensure Instance/Upload Folders Exist EARLY ---
 instance_path = os.path.join(app.instance_path) # Use Flask's built-in instance_path property
@@ -191,6 +207,29 @@ with app.app_context():
     except Exception as e:
         # Log the full traceback for database errors
         logging.error(f"Error during database table check/creation: {e}", exc_info=True)
+
+class Conversation(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_google_id = db.Column(db.String(100), db.ForeignKey('user_profile.google_id'), nullable=False)
+    title = db.Column(db.String(255))
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationship with messages
+    messages = db.relationship('Message', backref='conversation', lazy='dynamic', cascade="all, delete-orphan")
+    
+    def __repr__(self):
+        return f'<Conversation {self.id} - {self.title}>'
+
+class Message(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    conversation_id = db.Column(db.Integer, db.ForeignKey('conversation.id'), nullable=False)
+    content = db.Column(db.Text, nullable=False)
+    is_user = db.Column(db.Boolean, default=True)  # True for user messages, False for AI responses
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    
+    def __repr__(self):
+        return f'<Message {self.id} - {"User" if self.is_user else "AI"}>'
 
 # --- Helper Functions ---
 
@@ -332,7 +371,7 @@ def extract_resume_data_with_gemini(resume_text):
         genai.configure(api_key=gemini_api_key)
         # Use a model suitable for structured data extraction, like Pro or potentially Flash
         # Consider Gemini 1.5 Pro if available and needing larger context or better JSON adherence
-        model = genai.GenerativeModel('gemini-1.5-flash') # Or 'gemini-pro'
+        model = genai.GenerativeModel('gemini-2.0-flash') # Or 'gemini-pro'
 
         logging.info("Calling Gemini API to process resume text...")
         response = model.generate_content(
@@ -371,111 +410,168 @@ def extract_resume_data_with_gemini(resume_text):
         # Store an error indicator in the JSON
         return json.dumps({"error": f"Gemini API call failed: {str(e)}"})
 
-
 def get_google_credentials():
-    """Gets Google credentials from the session.
-        Testing if the Credentials class can handle its own serialized format directly.
-    """
+    """Gets Google credentials from the session."""
     if 'credentials' not in session:
-        print("DEBUG: No 'credentials' found in session.")
+        logging.debug("No 'credentials' found in session.")
         return None
 
     try:
-        # Load the dictionary directly from the JSON string stored in the session
-        stored_credentials_dict = json.loads(session['credentials'])
-        print(f"DEBUG: Loaded credentials dict from session: {stored_credentials_dict}") # Debugging
+        credentials_json_str = session['credentials']
+        credentials_info = json.loads(credentials_json_str)
+        # The 'expiry' field in credentials_info (from to_json()) is typically an ISO 8601 string.
+        # Credentials.from_authorized_user_info should handle this.
+        creds = Credentials.from_authorized_user_info(credentials_info)
 
-        # --- ALTERNATIVE FIX: Remove explicit datetime conversion ---
-        # Let the Credentials class constructor handle the dictionary directly,
-        # including the 'expiry' string as it was saved by to_json().
-        # The library might be better equipped to handle its own format.
+        # The library should handle expiry internally. If it's already a datetime, ensure it's UTC.
+        # If it needs to be naive UTC for some reason (less common with this lib):
+        if creds.expiry and creds.expiry.tzinfo:
+            creds.expiry = creds.expiry.astimezone(timezone.utc).replace(tzinfo=None)
 
-        # Check the type before creating Credentials object
-        expiry_value = stored_credentials_dict.get('expiry')
-
-        print(f"DEBUG: Type of expiry loaded from JSON: {type(expiry_value)}")
-        print(f"DEBUG: Value of expiry loaded from JSON: {expiry_value}")
-
-
-        # Create Credentials object from the dictionary
-        # Ensure all necessary fields are present for Credentials object creation
-        required_keys = ['token', 'refresh_token', 'token_uri', 'client_id', 'client_secret', 'scopes']
-        # Note: expiry is handled above, refresh_token might be None initially but should exist if offline access was granted
-        if all(key in stored_credentials_dict for key in required_keys if key != 'refresh_token') and \
-            stored_credentials_dict.get('token'): # Ensure token exists
-                print("DEBUG: Creating Credentials object directly from loaded dict...")
-                # Pass the dictionary directly, assuming Credentials can handle the expiry string format
-                creds = Credentials(**stored_credentials_dict)
-                print("DEBUG: Credentials object created.")
-                # Verify expiry type *after* object creation by the library
-                if hasattr(creds, 'expiry'):
-                    creds.expiry = datetime.fromisoformat(creds.expiry.replace("Z", "+00:00"))
-                    print(f"DEBUG: Type of creds.expiry after creation: {type(creds.expiry)}")
-                    if isinstance(creds.expiry, datetime):
-                        print(f"DEBUG: Timezone info of creds.expiry: {creds.expiry.tzinfo}")
-                        creds.expiry = creds.expiry.replace(tzinfo=None)
-                return creds
-        else:
-            print("Warning: Incomplete credentials data found in session before creating Credentials object.")
-            session.pop('credentials', None) # Clear incomplete data
-            return None
-
+        logging.debug(f"Successfully loaded credentials from session. Valid: {creds.valid}")
+        return creds
     except json.JSONDecodeError:
-        print("Error: Could not decode credentials from session.")
-        session.pop('credentials', None) # Clear potentially corrupt data
+        logging.error("Error: Could not decode credentials from session.", exc_info=True)
+        session.pop('credentials', None)
         return None
-    except TypeError as te:
-            # Catch potential TypeError during Credentials creation if format is wrong
-            print(f"TypeError during Credentials object creation: {te}")
-            print("DEBUG: Credentials dictionary causing error:", stored_credentials_dict)
-            session.pop('credentials', None) # Clear potentially problematic data
-            return None
     except Exception as e:
-        print(f"Error loading/creating credentials from session: {e}")
+        logging.error(f"Error loading/creating credentials from session: {e}", exc_info=True)
         session.pop('credentials', None)
         return None
 
 def save_google_credentials(credentials):
     """Saves Google credentials to the session."""
-    session['credentials'] = credentials.to_json()
+    try:
+        # credentials.to_json() returns a JSON string.
+        # No need to json.loads and then json.dumps if you store the string directly.
+        session['credentials'] = credentials.to_json()
+        logging.debug("Successfully saved credentials to session")
+    except Exception as e:
+        logging.error(f"Error saving credentials to session: {e}", exc_info=True)
+        session.pop('credentials', None)
 
+def build_google_service(service_name, version):
+    credentials = get_google_credentials() # Use the refactored getter
+    if not credentials:
+        logging.error(f"No valid credentials for {service_name}")
+        flash("Your session may have expired or credentials are not found. Please log in again.", "warning")
+        return None # Or redirect to login
+
+    # logging.debug(f"Building {service_name} service v{version}")
+    # logging.debug(f"Using credentials. Valid: {credentials.valid}, Expired: {credentials.expired}")
+
+
+    if credentials.expired and credentials.refresh_token:
+        logging.info("Refreshing expired token")
+        try:
+            credentials.refresh(GoogleAuthRequest())
+            save_google_credentials(credentials) # Re-save refreshed credentials
+            logging.info("Token refreshed successfully.")
+        except google.auth.exceptions.RefreshError as e:
+            logging.error(f"Error refreshing token: {str(e)}", exc_info=True)
+            if "invalid_grant" in str(e).lower() or "token has been revoked" in str(e).lower():
+                logging.warning("Token has been revoked or is invalid, clearing session.")
+                session.clear()
+                flash("Your authorization has expired or been revoked. Please log in again.", "danger")
+            else:
+                flash("Could not refresh your session. Please try logging in again.", "warning")
+            return None
+        except Exception as e: # Catch any other refresh exception
+            logging.error(f"Unexpected error refreshing token: {str(e)}", exc_info=True)
+            flash("An unexpected error occurred while refreshing your session. Please try logging in again.", "warning")
+            return None
+    elif credentials.expired and not credentials.refresh_token:
+        logging.warning("Token expired and no refresh token available. Clearing session.")
+        session.clear()
+        flash("Your session has expired and cannot be refreshed. Please log in again.", "danger")
+        return None
+
+
+    if not credentials.valid:
+        logging.warning(f"Credentials are not valid for {service_name}. Clearing session.")
+        session.clear() # Or handle as appropriate
+        flash("Your session is invalid. Please log in again.", "warning")
+        return None
+
+    try:
+        service = build(service_name, version, credentials=credentials)
+        logging.debug(f"Successfully built {service_name} service.")
+        return service
+    except HttpError as e:
+        logging.error(f"HttpError building {service_name} service: {e.resp.status} - {e.content}", exc_info=True)
+        if e.resp.status in [401, 403]:
+            flash("Authentication error accessing Google Services. Your session might be invalid. Please log in again.", "danger")
+            session.clear() # Potentially clear session if auth fails critically
+        else:
+            flash(f"Error accessing Google Service ({service_name}): {e.resp.status}. Please try again.", "warning")
+        return None
+    except Exception as e:
+        logging.error(f"Unexpected error building {service_name} service: {str(e)}", exc_info=True)
+        flash(f"An unexpected error occurred while accessing Google Service ({service_name}).", "danger")
+        return None
+    
 def allowed_file(filename):
     return '.' in filename and \
            filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
-def build_google_service(service_name, version):
-    """Builds and returns a Google API service."""
-    try:
-        print(f"DEBUG: Building {service_name} service v{version}")
-        credentials = get_google_credentials()
-        if not credentials:
-            print(f"DEBUG: No valid credentials for {service_name}")
-            return None
+# def build_google_service(service_name, version):
+#     try:
+#         credentials_dict = session.get('credentials')
+#         if not credentials_dict:
+#             print(f"DEBUG: No credentials in session for {service_name}")
+#             return None
             
-        # Print token info for debugging
-        print(f"DEBUG: Token valid: {credentials.valid}")
-        print(f"DEBUG: Token expired: {credentials.expired}")
+#         print(f"DEBUG: Building {service_name} service v{version}")
+#         print(f"DEBUG: Loaded credentials dict from session: {credentials_dict}")
         
-        # Force token refresh if expired
-        if credentials.expired:
-            print("DEBUG: Refreshing expired token")
-            credentials.refresh(GoogleAuthRequest())
+#         # Create credentials object from dict
+#         try:
+#             print("DEBUG: Creating Credentials object directly from loaded dict...")
+#             print(credentials_dict)
+#             credentials = Credentials.from_authorized_user_info(credentials_dict)
+#             print("DEBUG: Credentials object created.")
+#             print(f"DEBUG: Type of creds.expiry after creation: {type(credentials.expiry)}")
+#             print(f"DEBUG: Timezone info of creds.expiry: {credentials.expiry.tzinfo}")
+#             print(credentials)
+#         except Exception as e:
+#             print(f"DEBUG: Error creating credentials object: {str(e)}")
+#             session.clear()
+#             return None
             
-        try:
-            service = build(service_name, version, credentials=credentials)
-            return service
-        except Exception as e:
-            print(f"DEBUG: Error building {service_name} service: {str(e)}")
-            # Handle specific auth errors if possible
-            if isinstance(e, HttpError) and e.resp.status in [401, 403]:
-                flash("Authentication error accessing Google Services. Please log in again.", "danger")
-                session.clear() # Clear session on auth failure
-            return None
+#         if not credentials:
+#             print(f"DEBUG: No valid credentials for {service_name}")
+#             return None
+            
+#         print(f"DEBUG: Token valid: {credentials.valid}")
+#         print(f"DEBUG: Token expired: {credentials.expired}")
+        
+#         # Force token refresh if expired
+#         if credentials.expired:
+#             print("DEBUG: Refreshing expired token")
+#             try:
+#                 credentials.refresh(GoogleAuthRequest())
+#             except Exception as e:
+#                 print(f"DEBUG: Error refreshing token: {str(e)}")
+#                 if "invalid_grant" in str(e).lower():
+#                     print("DEBUG: Token has been revoked, clearing session")
+#                     session.clear()
+#                     flash("Your session has expired. Please log in again.", "warning")
+#                 return None
+            
+#         try:
+#             service = build(service_name, version, credentials=credentials)
+#             return service
+#         except Exception as e:
+#             print(f"DEBUG: Error building {service_name} service: {str(e)}")
+#             if isinstance(e, HttpError) and e.resp.status in [401, 403]:
+#                 flash("Authentication error accessing Google Services. Please log in again.", "danger")
+#                 session.clear()
+#             return None
     
-    except Exception as e:
-        print(f"DEBUG: Error building {service_name} service: {str(e)}")
-        return None
-    
+#     except Exception as e:
+#         print(f"DEBUG: Error building {service_name} service: {str(e)}")
+#         return None
+
 def generate_job_titles_with_gemini(keywords):
     """
     Uses Gemini to suggest relevant job titles based on input keywords.
@@ -1559,9 +1655,22 @@ def start_processing():
             return jsonify({'status': 'error', 'message': error_msg})
         
         # 3. Process Each Email
-        emails_saved_count = 0 # Track emails saved to DB
+        emails_saved_count = 0
 
         for i, message_info in enumerate(messages):
+            # Check if processing has been stopped
+            current_status = redis_client.hget(job_id, 'status')
+            if current_status and current_status.decode('utf-8') == 'stopped':
+                print(f"DEBUG: Processing stopped by user for job {job_id}")
+                update_progress(job_id, 'stopped', processed_count, len(messages), error='Process stopped by user')
+                return jsonify({
+                    'status': 'stopped',
+                    'processed_count': processed_count,
+                    'included_count': included_count,
+                    'sheet_url': sheet_url,
+                    'emails_saved_db': emails_saved_count
+                })
+
             if max_emails is not None and processed_count >= max_emails:
                 print(f"DEBUG: Reached processing limit of {max_emails}")
                 break
@@ -1776,93 +1885,31 @@ def results():
 
 @app.route('/saved_emails')
 def saved_emails():
-    """Displays the list of emails saved by the user."""
     if 'user_info' not in session or not session['user_info'].get('google_id'):
-        flash("Please log in to view your saved emails.", "warning")
+        flash("Please log in to view or edit your profile.", "warning")
         return redirect(url_for('login'))
-
-    google_id = session['user_info']['google_id']
-
-    try:
-        user_saved_emails = SavedEmail.query.filter_by(user_google_id=str(google_id).encode())\
-                                      .order_by(SavedEmail.saved_at.desc())\
-                                      .all()
-
-    except Exception as e:
-        logging.error(f"Error fetching saved emails for user {google_id}: {e}", exc_info=True)
-        flash("An error occurred while retrieving your saved emails.", "danger")
-        user_saved_emails = []
-    print(f"DEBUG: User {google_id} has {len(user_saved_emails)} saved emails.")
-
-    return render_template('saved_emails.html',
-                           saved_emails=user_saved_emails,
-                           user_info=session.get('user_info'))
+    
+    user_google_id = session["user_info"]["google_id"]
+    saved_emails = SavedEmail.query.filter_by(user_google_id=user_google_id).order_by(SavedEmail.saved_at.desc()).all()
+    
+    return render_template("saved_emails.html", saved_emails=saved_emails)
 
 @app.route('/remove_email/<int:email_db_id>', methods=['POST'])
 def remove_email(email_db_id):
-    """Removes a saved email."""
-    if 'user_info' not in session or not session['user_info'].get('google_id'):
-        # Handle AJAX vs Form submit response
-        is_ajax = request.headers.get('X-Requested-With') == 'XMLHttpRequest'
-        if is_ajax:
-            return jsonify({'status': 'error', 'message': 'Authentication required.'}), 401
-        else:
-            flash("Authentication required.", "warning")
-            return redirect(url_for('login'))
-
-
-    google_id = session['user_info']['google_id']
-    is_ajax = request.headers.get('X-Requested-With') == 'XMLHttpRequest' # Check again inside
-
+    if "user_info" not in session:
+        return jsonify({'success': False, 'message': 'Not authenticated'}), 401
+    
     try:
-        email_to_remove = SavedEmail.query.filter_by(id=email_db_id, user_google_id=google_id).first()
-
-        if not email_to_remove:
-            if is_ajax:
-                 return jsonify({'status': 'error', 'message': 'Email not found or permission denied.'}), 404
-            else:
-                 flash("Email not found or permission denied.", "warning")
-                 return redirect(url_for('saved_emails'))
-
-
-        db.session.delete(email_to_remove)
-        db.session.commit()
-        logging.info(f"User {google_id} removed saved email DB ID: {email_db_id}")
-
-        if is_ajax:
-            return jsonify({'status': 'success', 'message': 'Email removed successfully!'}), 200
-        else:
-            flash("Email removed successfully!", "success")
-            return redirect(url_for('saved_emails'))
-
-    except Exception as e:
-        db.session.rollback()
-        logging.error(f"Error removing email DB ID {email_db_id} for user {google_id}: {e}", exc_info=True)
-        if is_ajax:
-             return jsonify({'status': 'error', 'message': f'Database error: {str(e)}'}), 500
-        else:
-             flash(f"An error occurred while removing the email: {e}", "danger")
-             return redirect(url_for('saved_emails'))
+        saved_email = SavedEmail.query.get_or_404(email_db_id)
+        if saved_email.user_google_id != session["user_info"]["google_id"]:
+            return jsonify({'success': False, 'message': 'Unauthorized'}), 403
         
-@app.route('/delete_email/<email_id>', methods=['DELETE'])
-def delete_email(email_id):
-    if 'user_info' not in session or not session['user_info'].get('google_id'):
-        return jsonify({'success': False, 'message': 'Authentication required.'}), 401
-
-    try:
-        # Get the saved email from database
-        saved_email = SavedEmail.query.filter_by(id=email_id).first()
-        if not saved_email:
-            return jsonify({'success': False, 'message': 'Email not found'}), 404
-
-        # Get Gmail service
-        gmail_service = build_google_service('gmail', 'v1')
-        if not gmail_service:
-            return jsonify({'success': False, 'message': 'Failed to initialize Gmail service'}), 500
-
-        # Delete from Gmail
+        # Delete from Gmail if possible
         try:
-            gmail_service.users().messages().trash(userId='me', id=saved_email.gmail_message_id).execute()
+            credentials = get_google_credentials()
+            if credentials:
+                service = build_google_service('gmail', 'v1')
+                service.users().messages().delete(userId='me', id=saved_email.gmail_message_id).execute()
         except Exception as gmail_err:
             logging.error(f"Error deleting email from Gmail: {gmail_err}")
             # Continue with database deletion even if Gmail deletion fails
@@ -1878,14 +1925,264 @@ def delete_email(email_id):
         logging.error(f"Error deleting email: {e}")
         return jsonify({'success': False, 'message': str(e)}), 500
 
+@app.route('/delete_email/<email_id>', methods=['DELETE'])
+def delete_email(email_id):
+    if "user_info" not in session:
+        return jsonify({'success': False, 'message': 'Not authenticated'}), 401
+    
+    try:
+        saved_email = SavedEmail.query.filter_by(gmail_message_id=email_id).first()
+        if not saved_email:
+            return jsonify({'success': False, 'message': 'Email not found'}), 404
+        
+        if saved_email.user_google_id != session["user_info"]["google_id"]:
+            return jsonify({'success': False, 'message': 'Unauthorized'}), 403
+        
+        # Delete from Gmail if possible
+        try:
+            credentials = get_google_credentials()
+            if credentials:
+                service = build_google_service('gmail', 'v1')
+                service.users().messages().delete(userId='me', id=email_id).execute()
+        except Exception as gmail_err:
+            logging.error(f"Error deleting email from Gmail: {gmail_err}")
+            # Continue with database deletion even if Gmail deletion fails
+            # This ensures the email is at least removed from our database
+
+        # Delete from database
+        db.session.delete(saved_email)
+        db.session.commit()
+        
+        return jsonify({'success': True})
+    except Exception as e:
+        db.session.rollback()
+        logging.error(f"Error deleting email: {e}")
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+@app.route("/chat")
+def chat():
+    if 'user_info' not in session or not session['user_info'].get('google_id'):
+        flash("Please log in to view or edit your profile.", "warning")
+        return redirect(url_for('login'))
+
+    user_google_id = session["user_info"]["google_id"]
+    conversations = Conversation.query.filter_by(user_google_id=user_google_id).order_by(Conversation.updated_at.desc()).all()
+    
+    conversation_id = request.args.get("conversation_id")
+    messages = []
+    
+    # Create a new conversation if none exist
+    if not conversations:
+        new_conversation = Conversation(
+            user_google_id=user_google_id,
+            title="New Conversation"
+        )
+        db.session.add(new_conversation)
+        db.session.commit()
+        conversation_id = new_conversation.id
+        conversations = [new_conversation]
+    
+    # If conversation_id is provided, get messages for that conversation
+    if conversation_id:
+        messages = Message.query.filter_by(conversation_id=conversation_id).order_by(Message.created_at.asc()).all()
+    # If no conversation_id but conversations exist, use the first one
+    elif conversations:
+        conversation_id = conversations[0].id
+        messages = Message.query.filter_by(conversation_id=conversation_id).order_by(Message.created_at.asc()).all()
+    
+    return render_template(
+        "chat.html",
+        conversations=conversations,
+        messages=messages,
+        current_conversation_id=conversation_id
+    )
+
+@app.route("/chat_with_ai", methods=["POST"])
+def chat_with_ai():
+    if "user_info" not in session:
+        return jsonify({"error": "Not authenticated"}), 401
+
+    try:
+        data = request.get_json()
+        if not data or "message" not in data:
+            return jsonify({"error": "No message provided"}), 400
+
+        user_google_id = session["user_info"]["google_id"]
+        message_content = data["message"]
+        conversation_id = data.get("conversation_id")
+
+        # Get or create conversation
+        if conversation_id:
+            conversation = Conversation.query.get(conversation_id)
+            if not conversation or conversation.user_google_id != user_google_id:
+                print("Invalid conversation")
+                return jsonify({"error": "Invalid conversation"}), 400
+        else:
+            conversation = Conversation(
+                user_google_id=user_google_id,
+                title=message_content[:30] + "..." if len(message_content) > 30 else message_content
+            )
+            db.session.add(conversation)
+            db.session.flush()  # Get the conversation ID without committing
+
+        # Save user message
+        user_message = Message(
+            conversation_id=conversation.id,
+            content=message_content,
+            is_user=True
+        )
+        db.session.add(user_message)
+        # Get Gemini API key from session   
+        print(session)
+        gemini_api_key = GEMINI_API_KEY
+        if not gemini_api_key:
+            return jsonify({"error": "Gemini API key not found"}), 400
+        print("Gemini API key found")
+        # Configure Gemini
+        genai.configure(api_key=gemini_api_key)
+        model = genai.GenerativeModel("gemini-2.0-flash")
+
+        # Get user profile context
+        user_profile = UserProfile.query.filter_by(google_id=user_google_id).first()
+        context = ""
+        if user_profile and user_profile.extracted_resume_json:
+            resume_data = json.loads(user_profile.extracted_resume_json)
+            skills = resume_data.get("skills", [])
+            work_experience = resume_data.get("work_experience", [])
+            education = resume_data.get("education", [])
+
+            context = f"""
+            User Profile:
+            - Skills: {', '.join(skills)}
+            - Work Experience: {len(work_experience)} positions
+            - Education: {len(education)} entries
+            """
+        # Generate response, Build prompt with context
+        prompt = f"""
+            You are an Expert AI Career Strategist & Consultant. Your mission is to provide personalized, insightful, and actionable guidance to empower users in their job search and career development. Adopt a professional, empathetic, and encouraging tone.
+
+            SYSTEM CONTEXT:
+            {context}
+
+            USER MESSAGE:
+            "{message_content}"
+
+            YOUR TASK:
+            Based on the user's message and available context, provide a concise and helpful response. Your advice MUST be:
+
+            1. Directly Relevant: Address the user's specific query or implied need. If the query is vague, offer initial general advice and then ask 1-2 targeted clarifying questions.
+
+            2. Specific & Actionable:
+               - Avoid generic platitudes
+               - Provide concrete steps and examples
+               - Explain how to use recommended resources
+
+            3. Insightful & Strategic:
+               - Offer deeper insights about the job market
+               - Help think strategically about options and goals
+
+            4. Focus on Key Areas (as applicable):
+               - Job Search Strategies
+               - Resume/CV & Cover Letter Optimization
+               - Interview Preparation
+               - Career Development
+
+            FORMATTING RULES:
+            - Keep responses concise and to the point
+            - Use bullet points with "-" instead of "*"
+            - Use numbered lists for steps
+            - Use clear section headers
+            - Avoid markdown formatting
+            - Use line breaks for readability
+            - Keep paragraphs short (2-3 sentences max)
+
+            OUTPUT STRUCTURE:
+            1. Brief acknowledgment of the user's situation
+            2. Main advice in clear, actionable points
+            3. Supporting details if needed
+            4. Encouraging conclusion or next steps
+
+            Remember: Be concise, clear, and practical. Focus on actionable advice rather than lengthy explanations.
+            """
+
+        response = model.generate_content(prompt)
+        response_text = response.text
+
+        # Save AI response
+        ai_message = Message(
+            conversation_id=conversation.id,
+            content=response_text,
+            is_user=False
+        )
+        db.session.add(ai_message)
+
+        # Update conversation timestamp
+        conversation.updated_at = datetime.utcnow()
+        db.session.commit()
+
+        return jsonify({
+            "response": response_text,
+            "conversation_id": conversation.id
+        })
+
+    except json.JSONDecodeError:
+        return jsonify({"error": "Invalid JSON"}), 400
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/delete_conversation/<int:conversation_id>", methods=["DELETE"])
+def delete_conversation(conversation_id):
+    if "user_info" not in session:
+        return jsonify({"error": "Not authenticated"}), 401
+
+    try:
+        user_google_id = session["user_info"]["google_id"]
+        conversation = Conversation.query.get(conversation_id)
+
+        if not conversation or conversation.user_google_id != user_google_id:
+            return jsonify({"error": "Invalid conversation"}), 400
+
+        # Delete all messages in the conversation
+        Message.query.filter_by(conversation_id=conversation_id).delete()
+        
+        # Delete the conversation
+        db.session.delete(conversation)
+        db.session.commit()
+
+        return jsonify({"success": True})
+
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/stop_processing', methods=['POST'])
+def stop_processing():
+    """Stops the current email processing job."""
+    if 'user_info' not in session:
+        return jsonify({'success': False, 'message': 'Not authenticated'}), 401
+    
+    job_id = request.json.get('job_id')
+    if not job_id:
+        return jsonify({'success': False, 'message': 'No job ID provided'}), 400
+    
+    try:
+        # Update the job status in Redis to 'stopped'
+        redis_client.hset(job_id, 'status', 'stopped')
+        redis_client.hset(job_id, 'error', 'Process stopped by user')
+        
+        # Clear the job ID from session
+        session.pop('job_id', None)
+        session.modified = True
+        
+        return jsonify({'success': True, 'message': 'Processing stopped successfully'})
+    except Exception as e:
+        logging.error(f"Error stopping processing: {e}")
+        return jsonify({'success': False, 'message': str(e)}), 500
+
 # --- Run the App ---
 if __name__ == '__main__':
-    # Make sure necessary environment variables are set
-    if not CLIENT_ID or not CLIENT_SECRET:
-        print("ERROR: GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET environment variables must be set.")
-    else:
-        # This is important for OAuth state handling in some environments
-        os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1' # Allow HTTP for local testing ONLY
-        app.run() # Run in debug mode for development
-        # For production, use a proper WSGI server like Gunicorn or Waitress
-        # And set debug=False, SESSION_COOKIE_SECURE=True (if using HTTPS)
+    with app.app_context():
+        # Create all database tables
+        db.create_all()
+    app.run(host='127.0.0.1', port=5000, debug=True)

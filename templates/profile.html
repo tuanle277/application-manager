@@ -70,13 +70,6 @@ head %} {# ... (keep existing styles) ... #}
 </style>
 {% endblock %} {% block content %}
 <div class="bg-white p-8 rounded-xl shadow-lg max-w-3xl mx-auto">
-  <h1 class="text-3xl font-bold mb-6 text-center text-gray-800">
-    Your Profile
-  </h1>
-  <p class="text-center text-gray-600 mb-8">
-    Keep your application information up-to-date.
-  </p>
-
   {# --- Profile Form --- #}
   <form
     action="{{ url_for('profile') }}"

@@ -71,13 +71,13 @@
           href="{{ url_for('index') }}"
           class="text-xl font-bold text-blue-600 hover:text-blue-700 transition"
         >
-          <i class="fas fa-mail-bulk mr-2"></i> Job Analyzer
+          <i class="fas fa-mail-bulk mr-2"></i> Job Dashboard
         </a>
         <div>
           <ul class="flex items-center space-x-6">
             <li>
               <a href="{{ url_for('index') }}" class="nav-link text-gray-600"
-                >Jobs manager</a
+                >Email Scraper</a
               >
             </li>
             {% if user_info %}
@@ -91,6 +91,12 @@
                 href="{{ url_for('jobs') }}"
                 class="nav-link text-gray-600 {% if request.endpoint == 'jobs' %}active{% endif %}"
                 >Jobs</a
+              >
+            </li>
+
+            <li>
+              <a href="{{ url_for('chat') }}" class="nav-link text-gray-600"
+                >AI consultant</a
               >
             </li>
 
@@ -118,6 +124,10 @@
                 alt="User profile picture"
                 class="w-8 h-8 rounded-full"
               />
+            </li>
+            {% endif %} {% if user_info %}
+            <li class="text-sm text-gray-600">
+              {{ user_info.get('email', 'Unknown User') }}
             </li>
             {% endif %} {% else %}
             <li>
@@ -175,11 +185,9 @@
       class="text-center py-6 mt-auto bg-gray-100 border-t border-gray-200"
     >
       <p class="text-gray-500 text-sm">
-        Job Application Email Analyzer &copy; {{ now.year }}
-      </p>
-      <p class="text-gray-500 text-xs mt-1">
-        Using <span class="font-semibold text-indigo-600">Gemini API</span> for
-        AI analysis.
+        Job Application Email Analyzer using
+        <span class="font-semibold text-indigo-600">Gemini API</span> &copy; {{
+        now.year }}
       </p>
     </footer>
 
